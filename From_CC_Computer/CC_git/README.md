@@ -142,6 +142,10 @@ git pull cc --force
   only 2 API calls each, so you are fine unless you push a lot.
 - **push cannot update a ref directly** (no PATCH/DELETE in 1.75): it merges a
   throwaway branch instead, and leaves that branch behind on GitHub.
+- **push cannot delete or rename a file** — the tree is built on top of the current
+  one. Deleting anything needs a PC: `cc-dev/publish.sh "message"` pushes from a
+  real git clone. That also means a file and a folder cannot be swapped for each
+  other from in-game (git rejects the name collision).
 - Big repos: the recursive tree call can be truncated (`truncated: true`) — use
   `--path=` to clone a subdirectory. Parsing a 570 KB tree JSON takes a couple of
   seconds of CPU in-game.
@@ -149,9 +153,9 @@ git pull cc --force
 ## Tests
 
 ```bash
-cd cc-dev/tests
+cd cc-dev/CC_git/tests
 npm i fengari          # if /tmp/node_modules/fengari is missing
-node run.js            # -> 101 passed, 0 failed
+node run.js            # -> 152 passed, 0 failed
 ```
 
 The suite emulates the CC 1.75 API (including `readAll()` newline behaviour and

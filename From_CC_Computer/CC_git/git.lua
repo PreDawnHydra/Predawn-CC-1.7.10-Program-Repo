@@ -473,14 +473,24 @@ end
 local function exists(p) return fs.exists(p) end
 
 function git.mkdirs(path)
-  if path == "" or fs.exists(path) then return end
+  if path == "" or fs.isDir(path) then return end
   -- keep a leading "/" so absolute destinations work
   local acc = (string.sub(path, 1, 1) == "/") and "/" or nil
   for part in string.gmatch(path, "[^/]+") do
     if acc == nil then acc = part
     elseif acc == "/" then acc = "/" .. part
     else acc = acc .. "/" .. part end
-    if not fs.exists(acc) then fs.makeDir(acc) end
+    -- "." and ".." segments (and the root itself) are never files to replace:
+    -- fs.delete(".") would take the whole directory with it.
+    if part ~= "." and part ~= ".." and acc ~= "/" then
+      if fs.exists(acc) and not fs.isDir(acc) then
+        -- a local file sits where the repository has a directory (a rename done on
+        -- GitHub, for instance). Nothing can be written under it, so replace it.
+        warn("replacing local file " .. acc .. " with a directory")
+        fs.delete(acc)
+      end
+      if not fs.exists(acc) then fs.makeDir(acc) end
+    end
   end
 end
 
@@ -789,6 +799,23 @@ function git.cmdPull(args)
   end
 
   local updated, added, failed, bytes = 0, 0, 0, 0
+
+  -- removals first: a tracked file that became a directory upstream would
+  -- otherwise block the download of everything under it
+  local removed = {}
+  for _, path in ipairs(sortedKeys(cfg.files)) do
+    if not remote[path] then removed[#removed + 1] = path end
+  end
+  for _, path in ipairs(removed) do
+    if opts.prune then
+      fs.delete(pjoin(dest, path))
+      cfg.files[path] = nil
+      printf("  del   %s", path)
+    else
+      printf("  gone  %s (kept; use --prune to delete)", path)
+    end
+  end
+
   for _, path in ipairs(sortedKeys(remote)) do
     local e = remote[path]
     local old = cfg.files[path]
@@ -803,20 +830,6 @@ function git.cmdPull(args)
         failed = failed + 1
         warn("  ! " .. path .. ": " .. info)
       end
-    end
-  end
-
-  local removed = {}
-  for _, path in ipairs(sortedKeys(cfg.files)) do
-    if not remote[path] then removed[#removed + 1] = path end
-  end
-  for _, path in ipairs(removed) do
-    if opts.prune then
-      fs.delete(pjoin(dest, path))
-      cfg.files[path] = nil
-      printf("  del   %s", path)
-    else
-      printf("  gone  %s (kept; use --prune to delete)", path)
     end
   end
 

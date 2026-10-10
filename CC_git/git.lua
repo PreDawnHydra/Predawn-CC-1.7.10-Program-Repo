@@ -521,7 +521,7 @@ function git.walk(dir, prefix, out)
     if fs.isDir(abs) then
       if name ~= ".git" then git.walk(abs, rel, out) end
     else
-      if rel ~= git.CFG then
+      if name ~= git.CFG and name ~= git.TOKEN then
         out[rel] = fs.getSize and fs.getSize(abs) or #git.readFile(abs)
       end
     end
@@ -564,6 +564,8 @@ end
 --------------------------------------------------------------------------------
 
 git.CFG = ".gitcfg"
+-- never uploaded by push, at any depth: uploading this would publish the token
+git.TOKEN = ".git-token"
 
 function git.cfgPath(dir) return pjoin(dir, git.CFG) end
 
@@ -1020,12 +1022,12 @@ end
 function git.tokenPath()
   local dir = cwd()
   for _ = 1, 8 do
-    local candidate = pjoin(dir, ".git-token")
+    local candidate = pjoin(dir, git.TOKEN)
     if fs.exists(candidate) then return candidate end
     dir = parentOf(dir)
     if not dir then break end
   end
-  return pjoin(cwd(), ".git-token")
+  return pjoin(cwd(), git.TOKEN)
 end
 
 function git.loadToken()

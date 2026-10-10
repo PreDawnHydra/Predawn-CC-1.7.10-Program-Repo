@@ -146,6 +146,9 @@ git pull cc --force
   one. Deleting anything needs a PC: `cc-dev/publish.sh "message"` pushes from a
   real git clone. That also means a file and a folder cannot be swapped for each
   other from in-game (git rejects the name collision).
+- **push never uploads `.git-token` or `.gitcfg`**, at any depth — so cloning into
+  the computer's root directory (where the token lives) cannot publish your token
+  to GitHub.
 - Big repos: the recursive tree call can be truncated (`truncated: true`) — use
   `--path=` to clone a subdirectory. Parsing a 570 KB tree JSON takes a couple of
   seconds of CPU in-game.

@@ -786,7 +786,9 @@ function git.cmdPull(args)
 
   local sha, resolved = git.resolveCommit(cfg.owner, cfg.repo, cfg.branch)
   if not sha then return false, resolved end
-  if sha == cfg.commit and not opts.force then
+  -- --prune needs the remote tree to know what vanished, so it must not take the
+  -- "already up to date" shortcut even when the commit matches
+  if sha == cfg.commit and not opts.force and not opts.prune then
     print("already up to date (" .. sha:sub(1, 8) .. ")")
     return true
   end

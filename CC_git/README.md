@@ -110,7 +110,9 @@ Push safety notes:
   `.gitcfg` manifest (owner, repo, branch, commit, tree, per-file sha + size).
 - **pull** — re-resolves the branch head, diffs blob shas against `.gitcfg`,
   re-downloads only changed/new files, reports upstream removals (deletes them
-  only with `--prune`).
+  only with `--prune`). `--prune` deliberately skips the "already up to date"
+  shortcut, so it can clear leftovers even when your commit already matches the
+  branch head.
 - **status** — compares each tracked file's size *and* content fingerprint with the
   manifest: `modified`, `new`, `missing`, or `clean`.
 - **push** — needs a token with write access. Uploads changed/new files as blobs

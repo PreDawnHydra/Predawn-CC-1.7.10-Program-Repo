@@ -3,10 +3,10 @@ A collection of scripts for Computer Craft 1.7.10 mostly for my own personal use
 
 ## Layout
 
-- `From_CC_Computer/` — programs that were written and pushed from inside the game.
-- everything else — anything hand-written on a PC.
+One folder per program, at the top level. Nothing here is separated by whether it
+was written in game or on a PC.
 
-### From_CC_Computer/CC_git
+### CC_git
 
 A git client that runs **inside** ComputerCraft 1.75 (Minecraft 1.7.10). It speaks
 to the GitHub REST API using only `http.get`/`http.post`, which is all that

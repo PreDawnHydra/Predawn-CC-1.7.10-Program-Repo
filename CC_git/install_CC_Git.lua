@@ -4,6 +4,7 @@
 --   install_CC_Git           install anything missing, refresh anything present
 --   install_CC_Git update    ignore local copies and re-download from GitHub
 --   install_CC_Git status    what is installed, and whether the path entry is in place
+--   install_CC_Git unhook    take the path entry out of /startup again
 --
 -- Running it again is safe: files that already match are left alone, and a failed
 -- download never removes a working copy.
@@ -106,15 +107,43 @@ local function ensureDir(d)
 end
 
 -- append the path entry to /startup, once
+-- The hook is ONE line, tagged with MARKER, so it is trivial to detect, to keep
+-- idempotent, and to remove again with `install_CC_Git unhook`.
+local function startupLine()
+  return MARKER .. " if not shell.path():find(" .. string.format("%q", DIR) .. ", 1, true) then" ..
+    " shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ") end"
+end
+
+-- /rom is a read-only JarMount in ComputerCraft 1.75, so /startup in the computer
+-- root is the only boot hook there is. Their startup may error out or run forever,
+-- so our line goes at the TOP: appended, it would never be reached.
 local function ensureStartup()
-  local cur = readText(STARTUP) or ""
+  local cur = readText(STARTUP)
+  if cur == nil then
+    if not writeText(STARTUP, startupLine() .. "\n") then return "FAILED writing " .. STARTUP end
+    return "created " .. STARTUP .. " with the path entry"
+  end
   if cur:find(MARKER, 1, true) then return "path entry already in " .. STARTUP end
-  local block = "\n" .. MARKER .. "\n" ..
-    "if not shell.path():find(" .. string.format("%q", DIR) .. ", 1, true) then\n" ..
-    "    shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ")\n" ..
-    "end\n"
-  if not writeText(STARTUP, cur .. block) then return "FAILED writing " .. STARTUP end
-  return "added the path entry to " .. STARTUP
+  if not writeText(STARTUP, startupLine() .. "\n" .. cur) then return "FAILED writing " .. STARTUP end
+  return "added the path entry to the top of " .. STARTUP
+end
+
+-- drop only the lines we added; everything else in their startup stays put
+local function removeStartup()
+  local cur = readText(STARTUP)
+  if cur == nil then return "no " .. STARTUP .. " to change" end
+  if not cur:find(MARKER, 1, true) then return "no path entry in " .. STARTUP end
+  local kept = ""
+  for line in (cur .. "\n"):gmatch("([^\n]*)\n") do
+    if not line:find(MARKER, 1, true) then kept = kept .. line .. "\n" end
+  end
+  if kept:gsub("%s+", "") == "" then
+    -- nothing of theirs was in there, so take the file away too
+    local ok = pcall(fs.delete, STARTUP)
+    return ok and "removed the path entry and " .. STARTUP or "removed the path entry from " .. STARTUP
+  end
+  if not writeText(STARTUP, kept) then return "FAILED writing " .. STARTUP end
+  return "removed the path entry from " .. STARTUP
 end
 
 -- install, refresh or leave alone. Returns ok, note where note is one of
@@ -193,8 +222,13 @@ local function main(args)
     status()
     return true
   end
+  if action == "unhook" then
+    print(removeStartup())
+    print("the programs stay in " .. DIR .. " - call them as " .. DIR .. "/git if you unhook")
+    return true
+  end
   if action ~= "update" and action ~= nil and action ~= "install" then
-    print("usage: install_CC_Git [update|status]")
+    print("usage: install_CC_Git [update|status|unhook]")
     return false
   end
 

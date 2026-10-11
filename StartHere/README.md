@@ -34,7 +34,9 @@ git help
 ```
 
 `install_CC_Git` installs anything missing and refreshes anything already present,
-so running it again is always safe. Afterwards it is installed in `/usr` too, so
+so running it again is always safe. It adds one line to the **top** of `/startup` — if
+you already have a startup script of your own, yours still runs, and
+`install_CC_Git unhook` takes the line back out. Afterwards it is installed in `/usr` too, so
 updates need no pasting and no floppy:
 
 ```

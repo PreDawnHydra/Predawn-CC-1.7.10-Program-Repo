@@ -27,6 +27,32 @@ then on the computer:
 reboot
 ```
 
+### Why `/usr` and a `/startup` line?
+
+`/rom` is read-only in 1.75 (it is a `JarMount` straight out of the jar), so there is no
+way to install `git` the way `list` and `copy` ship. The default shell path is
+`.:/rom/programs:...` and every entry in it except `.` is read-only, which leaves two
+options: a folder you add yourself, or the current directory.
+
+So the installer puts the programs in `/usr` and adds **one line at the top of
+`/startup`** — the only boot hook ComputerCraft 1.75 has. Top, not bottom: an existing
+`/startup` may error out or block forever, and anything appended after it never runs.
+
+```
+install_CC_Git unhook     # remove our line again, leaving your startup alone
+```
+
+If you would rather not touch `/startup` at all, both of these work with no setup:
+
+```
+/usr/git status           # absolute path, works from anywhere
+cd cc && git status       # `.` is on the path, so a program in the cwd always runs
+```
+
+One caveat: if your own startup calls `shell.setPath(...)` it replaces the path outright.
+The hook is guarded against double-adding, but a plain `shell.setPath` in your script has
+to include `/usr` itself.
+
 On the floppy, keep the programs **extension-less** as well (`git`, `install_CC_Git`,
 `StartHere`) — the shell matches names exactly, so `/disk/install_CC_Git` is what you
 type, and that is also how the ROM ships its own programs.

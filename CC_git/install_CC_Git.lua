@@ -126,11 +126,14 @@ local function one(item, fromNet)
     end
   end
   if not text then
-    text, source = fetch(RAW .. name)
-    if not text then
-      printError("  ! " .. name .. ": " .. tostring(source))
+    -- fetch returns the body only; keep the URL separate instead of assuming it
+    -- hands back two values, or source ends up nil and the print below throws
+    local body, err = fetch(RAW .. name)
+    if not body then
+      printError("  ! " .. name .. ": " .. tostring(err))
       return false
     end
+    text, source = body, RAW .. name
   end
   if #text < 200 then
     printError("  ! " .. name .. ": only " .. #text .. " bytes - that does not look like the program")
@@ -140,7 +143,7 @@ local function one(item, fromNet)
     printError("  ! " .. target .. ": cannot write " .. join(DIR, target) .. " (disk full?)")
     return false
   end
-  print(string.format("  %-16s %6d bytes  v%-7s from %s", target, #text, versionOf(text), source))
+  print(string.format("  %-16s %6d bytes  v%-7s from %s", target, #text, versionOf(text), tostring(source)))
   return true
 end
 

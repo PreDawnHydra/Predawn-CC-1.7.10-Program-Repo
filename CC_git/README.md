@@ -52,6 +52,11 @@ is to put the path line in the text *that program* writes. `install_CC_Git hook`
 if not shell.path():find("/usr", 1, true) then shell.setPath(shell.path() .. ":/usr") end
 ```
 
+Once that line lives in the text your program writes, the installer notices it and
+**leaves the file alone** — `your /startup already sets the path - left alone` — and
+`unhook` will not remove a path line it did not add. `status` reports where the entry
+is and ignores comments above it: `path entry is line 2, where it belongs`.
+
 Re-running the installer also **migrates** the old appended block: it strips every trace
 of the previous hook and writes the new one at the top, so an upgrade from an earlier
 version fixes itself.

@@ -135,34 +135,24 @@ end
 -- Signatures of the multi-line block written by older installers. Those blocks sat
 -- at the BOTTOM of /startup, so on a computer with a startup script of its own they
 -- never ran - which is why an upgrade has to migrate them, not just notice that a
--- marker is present somewhere.
-local function hookTail(line, state)
-  if state == 0 then
-    if line:find("if not shell.path():find(", 1, true) then return 1 end
-  elseif state == 1 then
-    if line:find("shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ")", 1, true) then
-      return 2
-    end
-  elseif state == 2 then
-    if line:match("^%s*end%s*$") then return 3 end
-  end
-  return nil
-end
+-- marker is present somewhere. Only lines under a MARKER line are ever dropped, so a
+-- path line that someone else generated stays exactly where it is.
+local SETPATH = "shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ")"
 
--- every trace of our hook, old block included
 local function stripHook(text)
-  local kept, state = "", 0
+  local kept, want = "", 0          -- want: 0 nothing, 1 `if`, 2 `setPath`, 3 `end`
   for line in (text .. "\n"):gmatch("([^\n]*)\n") do
     if line:find(MARKER, 1, true) then
-      state = 0                      -- our one-liner, or the first line of an old block
+      want = 1
+    elseif want == 1 and line:find("if not shell.path():find(", 1, true) then
+      want = 2
+    elseif want == 2 and line:find(SETPATH, 1, true) then
+      want = 3
+    elseif want == 3 and line:match("^%s*end%s*$") then
+      want = 0
     else
-      local nxt = hookTail(line, state)
-      if nxt then
-        state = nxt
-      else
-        state = 0
-        kept = kept .. line .. "\n"
-      end
+      want = 0
+      kept = kept .. line .. "\n"
     end
   end
   return kept
@@ -173,11 +163,18 @@ local function blank(t) return t:gsub("%s+", "") == "" end
 -- /rom is a read-only JarMount in ComputerCraft 1.75, so /startup in the computer
 -- root is the only boot hook there is. Their startup may error out or run forever,
 -- so our line goes at the TOP: appended, it would never be reached.
+-- the path line, with or without our marker: an unmarked one belongs to whoever
+-- generates that startup (swarm_server does) and must not be duplicated or removed
+local function hookPresent(text) return text:find(hookCode(), 1, true) ~= nil end
+
 local function ensureStartup()
   local cur = readText(STARTUP)
   if cur == nil then
     if not writeText(STARTUP, startupLine() .. "\n") then return "FAILED writing " .. STARTUP end
     return "created " .. STARTUP .. " with the path entry"
+  end
+  if hookPresent(cur) and not cur:find(MARKER, 1, true) then
+    return "your " .. STARTUP .. " already sets the path - left alone"
   end
   local want = startupLine() .. "\n" .. stripHook(cur)
   if want:gsub("%s+$", "") == cur:gsub("%s+$", "") then
@@ -192,9 +189,8 @@ end
 local function removeStartup()
   local cur = readText(STARTUP)
   if cur == nil then return "no " .. STARTUP .. " to change" end
-  if not cur:find(MARKER, 1, true) and not cur:find("if not shell.path():find(", 1, true) then
-    return "no path entry in " .. STARTUP
-  end
+  -- marker only: a path line someone else generated is theirs to keep
+  if not cur:find(MARKER, 1, true) then return "no path entry in " .. STARTUP end
   local kept = stripHook(cur)
   if blank(kept) then
     -- nothing of theirs was in there, so take the file away too
@@ -272,12 +268,31 @@ local function status()
   local startup = readText(STARTUP)
   if startup == nil then
     print(STARTUP .. ": no startup script at all - git will not be on the path after a reboot")
-  elseif startup:match("^[^\n]*"):find(MARKER, 1, true) then
-    print(STARTUP .. ": path entry is line 1, where it belongs")
-  elseif startup:find(MARKER, 1, true) then
-    print(STARTUP .. ": path entry is buried below your own startup - run install_CC_Git to move it")
   else
-    print(STARTUP .. ": no path entry - run install_CC_Git")
+    local lines, n = {}, 0
+    for line in (startup .. "\n"):gmatch("([^\n]*)\n") do
+      n = n + 1 lines[n] = line
+    end
+    local at = nil
+    for i = 1, n do
+      if lines[i]:find(MARKER, 1, true) or lines[i]:find(hookCode(), 1, true) then
+        at = i break
+      end
+    end
+    if at == nil then
+      print(STARTUP .. ": no path entry - run install_CC_Git")
+    else
+      -- comments and blank lines above it cannot stop it running
+      local blocked = false
+      for i = 1, at - 1 do
+        if not (lines[i]:match("^%s*$") or lines[i]:match("^%s*%-%-")) then blocked = true end
+      end
+      if blocked then
+        print(STARTUP .. ": path entry is on line " .. at .. ", below other code - it may not be reached")
+      else
+        print(STARTUP .. ": path entry is line " .. at .. ", where it belongs")
+      end
+    end
   end
   -- warn even when the entry is present: a regenerated startup file gets rewritten,
   -- so a hook that looks fine now is gone the next time that program runs

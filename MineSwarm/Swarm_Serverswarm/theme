@@ -1,0 +1,106 @@
+-- ===========================================================================
+--  theme.lua   ->  loaded by os.loadAPI, becomes the global `theme`
+-- ---------------------------------------------------------------------------
+--  SINGLE source of truth for colour. Widgets and screens never name a colour
+--  directly; they ask for a ROLE. Re-skin the whole UI by editing a palette
+--  here, or add a palette and call theme.set("name").
+--
+--  NOTE: CC 1.7.5 has a fixed 16-colour palette (no custom palettes), so the
+--  "dark blue" look is expressed as blue/lightBlue accents on black panels.
+--  There is no dark grey in that palette: colors.gray is the darkest neutral,
+--  so "dark grey" is expressed as gray ink on a black/dark panel background.
+--  When theme customization is expanded later, only this file changes.
+--
+--  os.loadAPI rule: only TOP-LEVEL GLOBALS in this file are exported.
+-- ===========================================================================
+
+local PALETTES = {
+
+    -- Default: dark blue menu chrome, white text, black menu windows.
+    darkblue = {
+        desktop   = colors.black,     -- behind everything
+        panel     = colors.black,     -- menu window background
+        border    = colors.blue,      -- frame / divider (dark blue)
+        borderHi  = colors.lightBlue, -- focused / active frame
+        accent    = colors.blue,      -- selected item, primary button
+        accentHi  = colors.lightBlue, -- hovered / active accent
+        text      = colors.white,     -- body text
+        dim       = colors.gray,      -- secondary text
+        onAccent  = colors.white,     -- text drawn on an accent fill
+        selection = colors.blue,      -- selected row background
+        ok        = colors.lime,
+        warn      = colors.yellow,
+        error     = colors.red,
+        offline   = colors.gray,
+        bar       = colors.blue,      -- progress bar fill
+        barTrack  = colors.gray,
+        -- Buttons are solid chips, not ASCII frames, so they need their own
+        -- face/label roles rather than borrowing the panel border.
+        button       = colors.gray,      -- face, normal
+        onButton     = colors.black,     -- label on that face
+        buttonHi     = colors.lightBlue, -- face when keyboard-focused
+        onButtonHi   = colors.black,
+        buttonPrim   = colors.blue,      -- face for style="primary"
+        onButtonPrim = colors.white,
+        buttonDang   = colors.red,       -- face for style="danger"
+        onButtonDang = colors.white,
+        gutter      = colors.gray,       -- divider between menu and content
+        scrollbar   = colors.gray,       -- scrollbar track
+        scrollbarHi = colors.lightGray,  -- scrollbar thumb
+    },
+
+    -- Fallback for non-colour terminals: keep everything legible.
+    mono = {
+        desktop   = colors.black, panel     = colors.black,
+        border    = colors.white, borderHi  = colors.white,
+        accent    = colors.gray,  accentHi  = colors.lightGray,
+        text      = colors.white, dim       = colors.lightGray,
+        onAccent  = colors.black, selection = colors.gray,
+        ok        = colors.white, warn      = colors.lightGray,
+        error     = colors.white, offline   = colors.gray,
+        bar       = colors.white, barTrack  = colors.gray,
+        button    = colors.gray,  onButton    = colors.black,
+        buttonHi  = colors.lightGray, onButtonHi = colors.black,
+        buttonPrim= colors.gray,  onButtonPrim= colors.black,
+        buttonDang= colors.white, onButtonDang= colors.black,
+        gutter    = colors.gray,  scrollbar   = colors.gray,
+        scrollbarHi = colors.lightGray,
+    },
+}
+
+local active = "darkblue"
+
+-- Pick the mono palette automatically on a non-colour terminal.
+function auto()
+    if term.isColour and not term.isColour() then
+        active = "mono"
+    end
+end
+
+function name()
+    return active
+end
+
+function set(paletteName)
+    if PALETTES[paletteName] then
+        active = paletteName
+        return true
+    end
+    return false
+end
+
+function list()
+    local names = {}
+    for k in pairs(PALETTES) do table.insert(names, k) end
+    table.sort(names)
+    return names
+end
+
+-- Resolve a colour ROLE. Unknown roles fall back to white so a typo degrades
+-- visibly instead of crashing the draw loop.
+function c(role)
+    local p = PALETTES[active]
+    local v = p[role]
+    if v == nil then return colors.white end
+    return v
+end

@@ -1,0 +1,176 @@
+-- ===========================================================================
+--  agent.lua   ->  global `agent`      (TURTLE ONLY -- contains no UI)
+-- ---------------------------------------------------------------------------
+--  Registration, heartbeat and command handling. Event-driven: the app loop
+--  feeds it rednet_message events, so there is no blocking rednet.receive()
+--  fighting the UI for events.
+-- ===========================================================================
+
+local PROTO = {
+    REGISTER   = "register",
+    REGISTERED = "registered",
+    COMMAND    = "command",
+    PING       = "ping",
+    STATUS     = "status",
+    PONG       = "pong",
+}
+
+local CONFIG = {
+    heartbeat  = 10,   -- REAL seconds between status heartbeats
+    retry      = 4,    -- seconds between register broadcasts while unconnected
+    reRegister = 60,   -- periodic re-register so a restarted server re-learns us
+}
+
+local state = {
+    id = 0, name = "", server = nil,
+    status = "searching",
+    modems = {},
+    clock = 0, lastTry = 0, lastBeat = 0, lastReRegister = 0,
+    fuel = 0, items = 0,
+    log = {},
+}
+
+---------------------------------------------------------------------------
+-- Boot
+---------------------------------------------------------------------------
+function init()
+    state.id   = os.getComputerID()
+    state.name = "turtle_" .. state.id
+    state.clock = os.clock()
+    -- A turtle's modem comes from an EQUIPPED left/right upgrade, which the
+    -- peripheral API reports as a side. rednet.open() errors on a side with no
+    -- modem, so only open what peripheral.find reports.
+    peripheral.find("modem", function(side)
+        rednet.open(side)
+        table.insert(state.modems, side)
+    end)
+    refreshSensors()
+    return #state.modems > 0
+end
+
+function id()        return state.id end
+function name()      return state.name end
+function server()    return state.server end
+function status()    return state.status end
+function modems()    return state.modems end
+function config()    return CONFIG end
+
+---------------------------------------------------------------------------
+-- Sensors
+---------------------------------------------------------------------------
+local function fuelLevel()
+    if turtle.getFuelLevel then return turtle.getFuelLevel() or 0 end
+    if turtle.getFuel then return turtle.getFuel() or 0 end
+    return 0
+end
+
+local function countItems()
+    local total = 0
+    for slot = 1, 19 do                       -- normal (16) and advanced (19)
+        local ok, n = pcall(turtle.getItemCount, slot)
+        if ok then total = total + (n or 0) end
+    end
+    return total
+end
+
+function refreshSensors()
+    state.fuel  = fuelLevel()
+    state.items = countItems()
+end
+
+function fuel()  return state.fuel end
+function items() return state.items end
+
+---------------------------------------------------------------------------
+-- Log ring (turtle screen reads this)
+---------------------------------------------------------------------------
+local function logLine(line)
+    table.insert(state.log, tostring(line))
+    if #state.log > 20 then table.remove(state.log, 1) end
+end
+
+function log() return state.log end
+
+---------------------------------------------------------------------------
+-- Outbound
+---------------------------------------------------------------------------
+local function payload()
+    return { name = state.name, fuel = state.fuel,
+             items = state.items, state = state.status }
+end
+
+function register()
+    state.lastTry = state.clock
+    rednet.broadcast({ name = state.name, fuel = state.fuel }, PROTO.REGISTER)
+    logLine("register broadcast")
+end
+
+function sendStatus()
+    if not state.server then return false end
+    refreshSensors()
+    rednet.send(state.server, payload(), PROTO.STATUS)
+    return true
+end
+
+---------------------------------------------------------------------------
+-- Inbound
+---------------------------------------------------------------------------
+local function handleCommand(msg)
+    local cmd = msg.cmd
+    if cmd == "status" then
+        sendStatus(); logLine("status requested by server")
+    elseif cmd == "ping" then
+        refreshSensors()
+        rednet.send(state.server, payload(), PROTO.PONG)
+        logLine("ping -> pong")
+    elseif cmd == "task" then
+        -- NEXT PHASE: real mining task dispatch lands here.
+        logLine("task received -- task system not implemented yet")
+    else
+        logLine("unknown command: " .. tostring(cmd))
+    end
+end
+
+function onRednet(id, message, proto)
+    if type(message) ~= "table" then return end
+    if proto == PROTO.REGISTERED then
+        state.server = message.serverAddress or id
+        state.status = "online"
+        state.lastBeat = state.clock
+        logLine("connected to server id " .. tostring(state.server))
+    elseif state.server and id == state.server then
+        if proto == PROTO.COMMAND then
+            handleCommand(message)
+        elseif proto == PROTO.PING then
+            refreshSensors()
+            rednet.send(id, payload(), PROTO.PONG)
+            logLine("ping -> pong")
+        end
+    end
+end
+
+---------------------------------------------------------------------------
+-- Periodic work, driven by the app's 1s timer
+---------------------------------------------------------------------------
+function tick()
+    state.clock = os.clock()
+
+    if not state.server then
+        state.status = "searching"
+        if state.clock - state.lastTry >= CONFIG.retry then register() end
+        return
+    end
+
+    if state.clock - state.lastBeat >= CONFIG.heartbeat then
+        state.lastBeat = state.clock
+        sendStatus()
+        state.status = "online"
+    end
+
+    -- Self-healing: if the server was rebooted with a different id, or our
+    -- address went stale, this re-establishes it without a manual restart.
+    if state.clock - state.lastReRegister >= CONFIG.reRegister then
+        state.lastReRegister = state.clock
+        register()
+    end
+end

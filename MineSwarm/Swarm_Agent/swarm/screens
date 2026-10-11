@@ -1,0 +1,73 @@
+-- ===========================================================================
+--  screens.lua   ->  global `screens`      (TURTLE -- deliberately minimal)
+-- ---------------------------------------------------------------------------
+--  One status page. A turtle's own screen is 51x19 and is usually closed, so
+--  this stays small; the same widget toolkit as the server keeps it cheap to
+--  extend later (registerScreen is all it takes).
+-- ===========================================================================
+
+local function buildStatus(app, root)
+    local b = app.body()
+    -- Bottom-anchored: buttons pinned to the last row, log absorbs the rest.
+    local buttonY = b.y + b.h - 1
+
+    root:add(widgets.panel({ x = b.x, y = b.y, w = b.w, h = 6, title = "AGENT" }))
+
+    local lx = b.x + 2
+    local lw = math.floor(b.w / 2) - 2
+    local rx = b.x + math.floor(b.w / 2) + 1
+    local rw = b.w - math.floor(b.w / 2) - 3
+
+    root:add(widgets.label({ x = lx, y = b.y + 1, w = lw,
+        value = function() return "name " .. agent.name() .. " id " .. agent.id() end, role = "text" }))
+    root:add(widgets.label({ x = lx, y = b.y + 2, w = lw,
+        value = function() return "server " .. tostring(agent.server() or "-- none --") end, role = "dim" }))
+    root:add(widgets.label({ x = lx, y = b.y + 3, w = lw,
+        value = function() return "modems: " .. table.concat(agent.modems(), ",") end, role = "dim" }))
+    root:add(widgets.label({ x = lx, y = b.y + 4, w = lw,
+        value = function() return "items " .. agent.items() end, role = "text" }))
+
+    root:add(widgets.label({ x = rx, y = b.y + 1, w = rw,
+        value = function() return "state: " .. agent.status() end,
+        role = function()
+            local s = agent.status()
+            if s == "online" then return "ok" end
+            if s == "searching" then return "warn" end
+            return "text"
+        end }))
+    root:add(widgets.label({ x = rx, y = b.y + 3, w = rw,
+        value = function() return "fuel " .. agent.fuel() end, role = "text" }))
+    root:add(widgets.progress({ x = rx, y = b.y + 4, w = math.min(rw, 20), h = 1,
+        value = function() return agent.fuel() end,
+        max   = function() return math.max(agent.fuel(), 25) end }))
+
+    local logY = b.y + 7
+    local logH = math.max(buttonY - 1 - logY + 1, 3)
+    root:add(widgets.panel({ x = b.x, y = logY, w = b.w, h = logH, title = "RECENT" }))
+    local view = widget.new({ x = b.x + 1, y = logY + 1, w = b.w - 2, h = math.max(logH - 2, 1) })
+    function view.drawSelf(s)
+        local lines = agent.log()
+        local startIdx = math.max(1, #lines - view.h + 1)
+        local r = 0
+        for i = startIdx, #lines do
+            widget.text(s, view.x, view.y + r, widget.clip(lines[i], view.w),
+                theme.c("dim"), theme.c("panel"))
+            r = r + 1
+        end
+    end
+    root:add(view)
+
+    -- Button widths adapt so the row never runs off a narrow terminal.
+    local bw = math.max(math.min(12, math.floor((b.w - 2) / 2)), 6)
+    root:add(widgets.button({ x = b.x, y = buttonY, w = bw, h = 1, label = "Register",
+        style = "primary", action = function() agent.register(); app.notify("registering...", "ok") end }))
+    root:add(widgets.button({ x = b.x + bw + 2, y = buttonY, w = bw, h = 1, label = "Status",
+        action = function()
+            if agent.sendStatus() then app.notify("status sent", "ok")
+            else app.notify("not connected yet", "warn") end
+        end }))
+end
+
+function build(app)
+    app.registerScreen("status", "Status", buildStatus)
+end

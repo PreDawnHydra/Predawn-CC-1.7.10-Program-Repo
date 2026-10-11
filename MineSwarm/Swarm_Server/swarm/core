@@ -1,0 +1,265 @@
+-- ===========================================================================
+--  core.lua   ->  global `core`      (SERVER ONLY -- contains no UI)
+-- ---------------------------------------------------------------------------
+--  Protocol, turtle state and command dispatch. The UI talks to this and
+--  nothing else, so screens can be rewritten without touching the network.
+--
+--  Two correctness fixes baked in (verified against the 1.7.5 jar):
+--   * Timing uses os.clock(), which is monotonic REAL seconds
+--     (m_clock * 0.05). os.time() is in-game time-of-day in HOURS and wraps
+--     every 20 real minutes, which made staleness impossible to detect.
+--   * A "status" heartbeat from an unknown id re-registers that turtle, so a
+--     server restart no longer loses the fleet permanently.
+-- ===========================================================================
+
+local PROTO = {
+    REGISTER   = "register",
+    STATUS     = "status",
+    PONG       = "pong",
+    REGISTERED = "registered",
+    COMMAND    = "command",
+    PING       = "ping",
+}
+
+local CONFIG = {
+    staleAfter = 45,   -- REAL seconds without a message before a turtle is stale
+    logLines   = 60,
+}
+
+local state = {
+    address = 0,
+    modems  = {},
+    turtles = {},
+    log     = {},
+    clock   = 0,
+}
+
+---------------------------------------------------------------------------
+-- Boot
+---------------------------------------------------------------------------
+function init()
+    state.address = os.getComputerID()
+    state.clock   = os.clock()
+    -- rednet.open() ERRORS on a side with no modem, so only open what
+    -- peripheral.find actually reports. The 2nd arg is a FILTER (it is called
+    -- with the side name); we open inside it and ignore the returned list.
+    peripheral.find("modem", function(side)
+        rednet.open(side)
+        table.insert(state.modems, side)
+    end)
+    return #state.modems > 0
+end
+
+function address()     return state.address end
+function modemSides()  return state.modems end
+function protocol()    return PROTO end
+function config()      return CONFIG end
+
+---------------------------------------------------------------------------
+-- Time
+---------------------------------------------------------------------------
+function tick()
+    state.clock = os.clock()
+end
+
+local function isOnline(t)
+    return (state.clock - (t.lastSeen or 0)) <= CONFIG.staleAfter
+end
+
+local function ageStr(t)
+    local a = math.floor(state.clock - (t.lastSeen or state.clock))
+    if a < 0 then a = 0 end
+    if a < 60   then return a .. "s" end
+    if a < 3600 then return math.floor(a / 60) .. "m" end
+    return math.floor(a / 3600) .. "h"
+end
+
+---------------------------------------------------------------------------
+-- Log ring buffer (console screen reads this)
+---------------------------------------------------------------------------
+local function logLine(line)
+    table.insert(state.log, tostring(line))
+    if #state.log > CONFIG.logLines then table.remove(state.log, 1) end
+end
+
+function log() return state.log end
+
+---------------------------------------------------------------------------
+-- Turtle table
+---------------------------------------------------------------------------
+-- Upsert: a heartbeat from an id we have never seen re-registers it. This is
+-- what makes the fleet survive a server reboot.
+local function touch(id)
+    local t = state.turtles[id]
+    if not t then
+        t = { id = id, name = "turtle_" .. id, firstSeen = state.clock }
+        state.turtles[id] = t
+        logLine("[+] turtle " .. id .. " re-registered from heartbeat")
+    end
+    t.lastSeen = state.clock
+    return t
+end
+
+-- Sorted array for the list widget (pairs() order is not stable).
+function turtles()
+    local out = {}
+    for id, t in pairs(state.turtles) do table.insert(out, t) end
+    table.sort(out, function(a, b) return a.id < b.id end)
+    return out
+end
+
+function turtleById(id) return state.turtles[id] end
+
+function turtleCount()
+    local n = 0
+    for _ in pairs(state.turtles) do n = n + 1 end
+    return n
+end
+
+function onlineCount()
+    local n = 0
+    for _, t in pairs(state.turtles) do if isOnline(t) then n = n + 1 end end
+    return n
+end
+
+function summary()
+    return string.format("%d turtle(s), %d online", turtleCount(), onlineCount())
+end
+
+---------------------------------------------------------------------------
+-- Inbound
+---------------------------------------------------------------------------
+local function handleRegister(id, data)
+    local t = touch(id)
+    t.name  = (data and data.name) or ("turtle_" .. id)
+    t.fuel  = data and data.fuel or t.fuel
+    t.state = "online"
+    rednet.send(id, { serverAddress = state.address }, PROTO.REGISTERED)
+    logLine("[+] " .. t.name .. " (id " .. id .. ") registered")
+end
+
+local function handleStatus(id, data)
+    local t = touch(id)
+    if data then
+        t.name  = data.name or t.name
+        t.fuel  = data.fuel  or t.fuel
+        t.items = data.items or t.items
+        t.state = data.state or t.state
+    end
+end
+
+local function handlePong(id, data)
+    local t = touch(id)
+    if data then
+        t.fuel  = data.fuel  or t.fuel
+        t.items = data.items or t.items
+        t.state = data.state or t.state
+    end
+    logLine("[<] pong from " .. t.name .. " fuel=" .. tostring(t.fuel))
+end
+
+-- Fed directly by the app event loop from "rednet_message" events.
+function onRednet(id, message, proto)
+    if type(message) ~= "table" then return end
+    if proto == PROTO.REGISTER then
+        handleRegister(id, message)
+    elseif proto == PROTO.STATUS then
+        handleStatus(id, message)
+    elseif proto == PROTO.PONG then
+        handlePong(id, message)
+    end
+    -- anything else (e.g. rednet "dns" traffic) is ignored
+end
+
+---------------------------------------------------------------------------
+-- Outbound
+---------------------------------------------------------------------------
+function sendCommand(id, cmd)
+    rednet.send(id, { cmd = cmd }, PROTO.COMMAND)
+end
+
+function ping(id)
+    rednet.send(id, {}, PROTO.PING)
+end
+
+function broadcast(cmd)
+    local n = 0
+    for id, t in pairs(state.turtles) do
+        if isOnline(t) then sendCommand(id, cmd) n = n + 1 end
+    end
+    return n
+end
+
+function broadcastPing()
+    local n = 0
+    for id, t in pairs(state.turtles) do
+        if isOnline(t) then ping(id) n = n + 1 end
+    end
+    return n
+end
+
+---------------------------------------------------------------------------
+-- Declarative actions -- the UI builds buttons/menus from this table, so a new
+-- capability is one entry here and nothing else changes.
+---------------------------------------------------------------------------
+function actionDefs()
+    return {
+        pingAll   = { label = "Ping all",   hint = "ping every online turtle",
+                      run = function() logLine("ping -> " .. broadcastPing() .. " turtle(s)") end },
+        statusAll = { label = "Status all", hint = "request status from all",
+                      run = function() logLine("status -> " .. broadcast("status") .. " turtle(s)") end },
+        clearLog  = { label = "Clear log",  hint = "clear the console log",
+                      run = function() state.log = {} end },
+    }
+end
+
+---------------------------------------------------------------------------
+-- Text command dispatch (the Console tab)
+---------------------------------------------------------------------------
+function dispatch(line)
+    line = tostring(line or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if line == "" then return end
+
+    local parts = {}
+    for w in line:gmatch("%S+") do table.insert(parts, w) end
+    local cmd = parts[1]:lower()
+    local id  = tonumber(parts[2])
+
+    if cmd == "help" or cmd == "?" then
+        logLine("commands: list | ping <id> | status <id> | cluster <ping|status> | clear | help")
+    elseif cmd == "list" then
+        logLine(summary())
+        for _, t in ipairs(turtles()) do
+            logLine(string.format("  %-16s id=%-4s %-6s fuel=%-6s items=%-5s seen=%s",
+                t.name, t.id, isOnline(t) and "ON" or "STALE",
+                tostring(t.fuel), tostring(t.items), ageStr(t)))
+        end
+    elseif cmd == "clear" then
+        state.log = {}
+    elseif cmd == "ping" then
+        if id then ping(id) logLine("ping -> id " .. id)
+        else logLine("ping all? use: cluster ping") end
+    elseif cmd == "status" then
+        if id then sendCommand(id, "status") logLine("status -> id " .. id)
+        else logLine("use: status <id>") end
+    elseif cmd == "cluster" then
+        local what = (parts[2] or ""):lower()
+        if what == "ping" then logLine("cluster ping -> " .. broadcastPing() .. " turtle(s)")
+        elseif what == "status" then logLine("cluster status -> " .. broadcast("status") .. " turtle(s)")
+        else logLine("cluster: ping | status") end
+    else
+        logLine("unknown command: '" .. cmd .. "' (try 'help')")
+    end
+end
+
+---------------------------------------------------------------------------
+-- Presentation helpers shared by screens
+---------------------------------------------------------------------------
+function rowText(t)
+    return string.format("%-16s id=%-4s %-6s fuel=%-6s items=%-5s seen=%s",
+        t.name, t.id, isOnline(t) and "ON" or "STALE",
+        tostring(t.fuel), tostring(t.items), ageStr(t))
+end
+
+function isTurtleOnline(t) return isOnline(t) end
+function ageOf(t) return ageStr(t) end

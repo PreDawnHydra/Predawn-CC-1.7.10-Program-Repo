@@ -37,18 +37,17 @@ So a clone anywhere works — `/swarm_server.lua`, `/MineSwarm/Swarm_Server/swar
 even a floppy. `/startup` and `/halt` deliberately stay at the computer root: `startup`
 is the exact literal name the ROM looks up, and `/halt` is a computer-wide switch.
 
-**Clone folder gotcha.** `--path=` is relative to the *repo* root, and the clone folder is
-where that subtree lands, so cloning into a folder already called `MineSwarm` repeats the
-name — `/MineSwarm/MineSwarm/Swarm_Server/...`. Give the clone a different name to avoid
-the echo:
+**Clone layout.** `git.lua` makes a `--path` clone flat: the folder named by the path *is*
+the clone, so this gives `Swarm_Server/` at the current directory with `swarm/` and
+`swarm_server.lua` inside it, and `pull`/`push` translate the names back to the repository
+paths for you:
 
 ```
-git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo --path=MineSwarm/Swarm_Server/ swarm-server
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo --path=MineSwarm/Swarm_Server/
 ```
 
-This matches desktop git: a clone always contains the **repo root**, and a path filter
-(sparse checkout) hides other paths without ever moving a subtree up to the root. If you
-want `Swarm_Server/` itself to be the root, that is a separate repository, not a flag.
+Desktop git keeps the repo root inside the clone (sparse checkout never moves a subtree
+up), so `--keep-path` gets that layout back if you prefer it.
 
 One `/startup` per computer: if both the server and an agent run on the same computer,
 whichever started last owns it.

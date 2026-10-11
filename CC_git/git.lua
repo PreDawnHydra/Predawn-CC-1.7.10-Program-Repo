@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.1.0"
+git.VERSION = "1.2.0"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -572,6 +572,42 @@ git.TOKEN = ".git-token"
 
 function git.cfgPath(dir) return pjoin(dir, git.CFG) end
 
+-- A clone made with --path=DIR puts the subtree at the clone root instead of
+-- re-creating the repository's folders: `git clone you/repo --path=MineSwarm/Swarm_Server/`
+-- gives ./Swarm_Server/swarm_server.lua rather than ./repo/MineSwarm/Swarm_Server/...
+-- Desktop git keeps the folders (sparse checkout never moves a subtree to the root),
+-- so this is a deliberate, documented deviation: in-game the folder you asked for is
+-- the folder you want. The prefix is saved in .gitcfg, so pull and push translate
+-- local names back to repository names. --keep-path opts out and gets git's layout.
+function git.flatPrefix(filter)
+  if filter and filter.flat and filter.path then return filter.path end
+  return nil
+end
+
+function git.repoToLocal(filter, path)
+  local pfx = git.flatPrefix(filter)
+  if pfx and startsWith(path, pfx) then
+    -- a filter that names one exact file strips to nothing, so keep the file name
+    local rel = string.sub(path, #pfx + 1)
+    if rel == "" then rel = string.match(path, "[^/]+$") end
+    return rel
+  end
+  return path
+end
+
+function git.localToRepo(filter, path)
+  local pfx = git.flatPrefix(filter)
+  if pfx then return pfx .. path end
+  return path
+end
+
+-- last segment of a --path filter, used as the default destination:
+-- "MineSwarm/Swarm_Server/" -> "Swarm_Server"
+local function lastSegment(path)
+  local s = string.gsub(path, "/+$", "")
+  return string.match(s, "[^/]+$") or s
+end
+
 -- friendlier "not a clone" message: show what is actually there, because a
 -- failed/aborted clone and a wrong directory look identical otherwise.
 function git.missingCfgMsg(dest)
@@ -677,14 +713,15 @@ end
 -- download one blob and write it locally
 --------------------------------------------------------------------------------
 
-local function downloadFile(owner, repo, ref, entry, destDir)
+local function downloadFile(owner, repo, ref, entry, destDir, relPath)
   local ok, body = git.rawGet(owner, repo, ref, entry.path)
   if not ok then return false, body end
   local fsize, fsum = git.fingerprint(body)
   -- readAll() drops the final newline; the tree API tells us the true size
   if entry.size and #body + 1 == entry.size then body = body .. "\n" end
-  if not git.writeFile(pjoin(destDir, entry.path), body) then
-    return false, "could not write " .. entry.path
+  local localName = relPath or entry.path
+  if not git.writeFile(pjoin(destDir, localName), body) then
+    return false, "could not write " .. tostring(localName)
   end
   return true, #body, fsize, fsum
 end
@@ -710,6 +747,13 @@ function git.cmdClone(args)
   if dest and (dest:sub(1, 2) == "--" or dest == "") then dest = nil end
   local opts = git.parseFlags(args, 1)
   branch = branch or opts.branch or "main"
+  local filter = { path = opts.path, ext = opts.ext }
+  if opts.path and not opts["keep-path"] then filter.flat = true end
+  if not dest and opts.path and filter.flat then
+    -- a directory filter names the folder to create; a filter pointing at a single
+    -- file has no folder to name, so fall back to the repository name
+    dest = string.match(opts.path, "/$") and lastSegment(opts.path) or repo.repo
+  end
   dest = resolvePath(dest or repo.repo)
 
   if exists(git.cfgPath(dest)) then
@@ -759,7 +803,8 @@ function git.cmdClone(args)
   git.mkdirs(dest)
   local manifest, failed = {}, 0
   for i, e in ipairs(files) do
-    local ok, info, fsize, fsum = downloadFile(repo.owner, repo.repo, sha, e, dest)
+    local ok, info, fsize, fsum = downloadFile(repo.owner, repo.repo, sha, e, dest,
+                                                git.repoToLocal(filter, e.path))
     if not ok then
       failed = failed + 1
       warn("  ! " .. e.path .. ": " .. info)
@@ -774,7 +819,7 @@ function git.cmdClone(args)
   git.saveCfg(dest, {
     owner = repo.owner, repo = repo.repo, branch = branch,
     commit = sha, tree = treeData.sha, files = manifest,
-    filter = { path = opts.path, ext = opts.ext },
+    filter = filter,
     updated = os.time and os.time() or 0,
   })
 
@@ -821,7 +866,7 @@ function git.cmdPull(args)
   end
   for _, path in ipairs(removed) do
     if opts.prune then
-      fs.delete(pjoin(dest, path))
+      fs.delete(pjoin(dest, git.repoToLocal(cfg.filter, path)))
       cfg.files[path] = nil
       printf("  del   %s", path)
     else
@@ -833,7 +878,8 @@ function git.cmdPull(args)
     local e = remote[path]
     local old = cfg.files[path]
     if not old or old.sha ~= e.sha then
-      local ok, info, fsize, fsum = downloadFile(cfg.owner, cfg.repo, sha, e, dest)
+      local ok, info, fsize, fsum = downloadFile(cfg.owner, cfg.repo, sha, e, dest,
+                                                  git.repoToLocal(cfg.filter, path))
       if ok then
         cfg.files[path] = { sha = e.sha, size = e.size or info, fsize = fsize, fsum = fsum }
         bytes = bytes + info
@@ -868,17 +914,19 @@ function git.cmdStatus(args)
   printf("tracked files: %d", #sortedKeys(cfg.files))
 
   local localFiles = git.walk(dest, "", {})
+  local tracked = {}
+  for rel, size in pairs(localFiles) do tracked[git.localToRepo(cfg.filter, rel)] = size end
   local dirty, missing = {}, {}
   for path, meta in pairs(cfg.files) do
-    if localFiles[path] == nil then
+    if tracked[path] == nil then
       missing[#missing + 1] = path
-    elseif git.isDirty(pjoin(dest, path), meta) then
+    elseif git.isDirty(pjoin(dest, git.repoToLocal(cfg.filter, path)), meta) then
       dirty[#dirty + 1] = string.format("%s (local %s bytes, committed %s bytes)", path,
         tostring(localFiles[path]), tostring(meta.size))
     end
   end
   local untracked = {}
-  for path in pairs(localFiles) do
+  for path in pairs(tracked) do
     if not cfg.files[path] then untracked[#untracked + 1] = path end
   end
   table.sort(dirty); table.sort(untracked); table.sort(missing)
@@ -938,11 +986,12 @@ function git.cmdPush(args)
   local keep = opts.all and function() return true end or git.makeFilter(cfg.filter or {})
 
   local todo = {}
-  for path, size in pairs(localFiles) do
+  for rel, size in pairs(localFiles) do
+    local path = git.localToRepo(cfg.filter, rel)
     if keep(path) then
       local meta = cfg.files[path]
-      if not meta or git.isDirty(pjoin(dest, path), meta) then
-        todo[#todo + 1] = path
+      if not meta or git.isDirty(pjoin(dest, rel), meta) then
+        todo[#todo + 1] = { localName = rel, path = path, size = size }
       end
     end
   end
@@ -952,8 +1001,9 @@ function git.cmdPush(args)
   print(string.format("uploading %d file(s)", #todo))
   local treeEntries = {}
   local blobHintShown = false
-  for i, path in ipairs(todo) do
-    local content = git.readFile(pjoin(dest, path))
+  for i, item in ipairs(todo) do
+    local path = item.path
+    local content = git.readFile(pjoin(dest, item.localName))
     if content == nil then
       warn("  ! cannot read " .. path)
     else
@@ -972,7 +1022,7 @@ function git.cmdPush(args)
       else
         treeEntries[#treeEntries + 1] = { path = path, mode = "100644", type = "blob", sha = blob.sha }
         local fsize, fsum = git.fingerprint(content)
-        cfg.files[path] = { sha = blob.sha, size = size, fsize = fsize, fsum = fsum }
+        cfg.files[path] = { sha = blob.sha, size = item.size, fsize = fsize, fsum = fsum }
         printf("  [%d/%d] %s", i, #todo, path)
       end
     end
@@ -1148,6 +1198,8 @@ function git.usage()
   print("git token [<pat>]      git auth [owner/repo]")
   print("a clone's --path/--ext filters are saved in .gitcfg: pull and push follow them,")
   print("so one program folder at a time needs no full clone.")
+  print("with --path, the folder named by the path IS the clone (no repo folders inside it);")
+  print("add --keep-path for desktop git's layout, where the repository root is kept.")
 end
 
 function git.run(args)

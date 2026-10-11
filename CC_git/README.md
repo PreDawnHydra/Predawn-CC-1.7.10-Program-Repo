@@ -177,6 +177,29 @@ token for one command, `--new` allow cloning a folder that does not exist yet.
 
 ## One program at a time
 
+**A `--path` clone is flat by default.** `--path=MineSwarm/Swarm_Server/` creates a
+folder called `Swarm_Server` and puts the files straight inside it — the folder you asked
+for is the folder you get, with no repository folders repeated above it:
+
+```
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo --path=MineSwarm/Swarm_Server/
+cd Swarm_Server
+ls          # swarm  swarm_server.lua
+```
+
+Desktop git does **not** do this: a clone always contains the repo root, and sparse
+checkout hides paths without moving a subtree up. This is a deliberate deviation for
+in-game use, and `--keep-path` gets git's layout back:
+
+```
+git clone you/repo --path=MineSwarm/Swarm_Server/ --keep-path   # -> repo/MineSwarm/Swarm_Server/...
+```
+
+The prefix is saved in `.gitcfg`, so `pull` and `push` translate local names back to
+repository names — a flat clone pushes `swarm_server.lua` to
+`MineSwarm/Swarm_Server/swarm_server.lua`. Clones made before this change keep their
+nested layout; the flag lives in their `.gitcfg`.
+
 `--path=` is stored in `.gitcfg`, so `pull` and `push` keep honouring it — you never
 have to carry the whole repo on the computer.
 

@@ -27,14 +27,20 @@ then on the computer:
 reboot
 ```
 
-That copies `git.lua` into `/usr` and appends a path entry to `/startup`, which
-ComputerCraft runs at boot — after that `git` works from any directory. The
-installer prefers the copy sitting next to it and falls back to GitHub.
+On the floppy, keep the programs **extension-less** as well (`git`, `install_CC_Git`,
+`StartHere`) — the shell matches names exactly, so `/disk/install_CC_Git` is what you
+type, and that is also how the ROM ships its own programs.
+
+That copies `git.lua` to **`/usr/git`** (no extension — ComputerCraft's shell
+matches program names exactly and never appends `.lua`) and installs the updater as
+`/usr/install_CC_Git`. It appends a path entry to `/startup`, which ComputerCraft
+runs at boot; after that `git` works from any directory. The installer prefers a
+copy sitting next to it and falls back to GitHub.
 
 **Already installed? Update in place:**
 
 ```
-install_CC_Git update     # re-download git.lua from GitHub
+install_CC_Git update     # re-download git.lua and the updater from GitHub
 install_CC_Git status     # what is installed, which version, is the path entry set
 ```
 

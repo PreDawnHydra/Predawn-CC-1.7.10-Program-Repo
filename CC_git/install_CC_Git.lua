@@ -18,7 +18,9 @@
 
 -- where to pull from when there is no local copy on this machine
 local RAW     = "https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/"
-local FILES   = { "git.lua" }
+-- fetched name -> installed name. ComputerCraft's shell matches program names
+-- exactly (it never appends .lua), so what lands in /usr has no extension.
+local FILES   = { { "git.lua", "git" }, { "install_CC_Git.lua", "install_CC_Git" } }
 local DIR     = "/usr"
 local STARTUP = "/startup"
 local MARKER  = "-- git.lua path entry (added by install_CC_Git.lua)"
@@ -58,7 +60,7 @@ local function join(a, b)
   return a .. "/" .. b
 end
 
-local function localCopy(name)
+local function localCopy(names)
   local dirs = {}
   local h = here()
   if h then dirs[#dirs + 1] = h end
@@ -66,8 +68,10 @@ local function localCopy(name)
   dirs[#dirs + 1] = "."
   dirs[#dirs + 1] = "/"
   for _, d in ipairs(dirs) do
-    local p = join(d, name)
-    if fs.exists(p) and not fs.isDir(p) then return p end
+    for _, name in ipairs(names) do
+      local p = join(d, name)
+      if fs.exists(p) and not fs.isDir(p) then return p end
+    end
   end
   return nil
 end
@@ -111,10 +115,11 @@ local function ensureStartup()
   return "added the path entry to " .. STARTUP
 end
 
-local function one(name, fromNet)
+local function one(item, fromNet)
+  local name, target = item[1], item[2] or item[1]
   local text, source
   if not fromNet then
-    local p = localCopy(name)
+    local p = localCopy({ name, target })
     if p then
       text = readText(p)
       source = p
@@ -131,24 +136,25 @@ local function one(name, fromNet)
     printError("  ! " .. name .. ": only " .. #text .. " bytes - that does not look like the program")
     return false
   end
-  if not writeText(join(DIR, name), text) then
-    printError("  ! " .. name .. ": cannot write " .. join(DIR, name) .. " (disk full?)")
+  if not writeText(join(DIR, target), text) then
+    printError("  ! " .. target .. ": cannot write " .. join(DIR, target) .. " (disk full?)")
     return false
   end
-  print(string.format("  %-14s %6d bytes  v%-7s from %s", name, #text, versionOf(text), source))
+  print(string.format("  %-16s %6d bytes  v%-7s from %s", target, #text, versionOf(text), source))
   return true
 end
 
 local function status()
   print("programs in " .. DIR .. ":")
   local found = false
-  for _, name in ipairs(FILES) do
-    local p = join(DIR, name)
+  for _, item in ipairs(FILES) do
+    local target = item[2] or item[1]
+    local p = join(DIR, target)
     if fs.exists(p) and not fs.isDir(p) then
       found = true
-      print(string.format("  %-14s %6d bytes  version %s", name, fs.getSize(p), versionOf(readText(p))))
+      print(string.format("  %-16s %6d bytes  version %s", target, fs.getSize(p), versionOf(readText(p))))
     else
-      print("  " .. name .. ": not installed")
+      print("  " .. target .. ": not installed")
     end
   end
   local startup = readText(STARTUP)
@@ -176,8 +182,8 @@ local function main(args)
   end
 
   local okAll = true
-  for _, name in ipairs(FILES) do
-    if not one(name, fromNet) then okAll = false end
+  for _, item in ipairs(FILES) do
+    if not one(item, fromNet) then okAll = false end
   end
 
   print(ensureStartup())

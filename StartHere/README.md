@@ -11,10 +11,11 @@ tools (`install_CC_Git.lua`, then `git.lua`) from GitHub.
 ## The line to copy
 
 ```
-local u,d=... if not u then u="https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/install_CC_Git.lua" end if not d then d=(u:match("([^/]+)$")) or "download.txt" end if fs.exists(d) then io.write("Overwrite "..d.."? y/n ") if read()~="y" then print("cancelled") return end end local r=http.get(u) if not r then printError("fetch failed: no network, blocked host, or 404") return end local c=r.getResponseCode and r.getResponseCode() or 0 local b=r.readAll() or "" r.close() if c>=400 then printError("HTTP "..c) return end if b:sub(-1)~="\n" then b=b.."\n" end local h=fs.open(d,"w") if not h then printError("cannot write "..d) return end h.write(b) h.close() print("wrote "..#b.." bytes to "..d) if d:match("install_CC_Git%.lua$") then print("next: "..d) end
+local u,d=... u=u or "https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/install_CC_Git.lua" d=d or (u:match("[^/]+$")):gsub("%.lua$","") local r=http.get(u) if not r then printError("no net, blocked, or 404") return end local c=r.getResponseCode()or 0 local b=(r.readAll()or"").."
+" r.close() if c>=400 then printError("HTTP "..c) return end local h=fs.open(d,"w") if not h then printError("cannot write "..d) return end h.write(b) h.close() print(#b.." bytes -> "..d)
 ```
 
-That is **498 characters**, one line, no comments — deliberately.
+That is **509 characters**, one line, no comments — deliberately.
 
 ComputerCraft 1.75 silently cuts any paste at **512 characters**: `WidgetTerminal`
 does `if (text.length() > 512) text = text.substring(0, 512)` before it sends the
@@ -31,6 +32,11 @@ StartHere                 # no arguments: fetches install_CC_Git.lua from the re
 StartHere <url>           # fetch a URL, saving it under its own file name
 StartHere <url> <dest>    # fetch a URL, saving it as <dest>
 ```
+
+The destination defaults to the file name from the URL **with `.lua` removed** —
+ComputerCraft's shell matches program names exactly and never appends `.lua`, so an
+extension-less file is the one you can run by typing its name. Pass a destination if
+you want the extension kept.
 
 With no arguments it pulls:
 

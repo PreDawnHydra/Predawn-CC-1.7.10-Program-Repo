@@ -1,2 +1,2 @@
 Testing!!
-Adding new stuff this is cool!!
+Adding new stuff!

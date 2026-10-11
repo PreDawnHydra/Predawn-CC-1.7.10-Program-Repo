@@ -42,6 +42,16 @@ So the installer puts the programs in `/usr` and adds **one line at the top of
 install_CC_Git unhook     # remove our line again, leaving your startup alone
 ```
 
+If some **other program writes `/startup`**, our line cannot survive: that program owns
+the file. `swarm_server.lua` is the example — it writes `/startup` on every run, and its
+`/startup` is a `while true do shell.run("/swarm_server.lua") … sleep(3) end` loop, so the
+hook is overwritten within seconds. The installer detects that shape and says so; the fix
+is to put the path line in the text *that program* writes. `install_CC_Git hook` prints it:
+
+```
+if not shell.path():find("/usr", 1, true) then shell.setPath(shell.path() .. ":/usr") end
+```
+
 Re-running the installer also **migrates** the old appended block: it strips every trace
 of the previous hook and writes the new one at the top, so an upgrade from an earlier
 version fixes itself.
@@ -116,7 +126,9 @@ install_CC_Git status     # says exactly where the path entry is
 
 1. **You have not rebooted.** `shell.setPath` only changes the shell that calls it, so
    a program can never fix the path of the shell that launched it. One `reboot`.
-2. **The entry is buried.** Older installers appended their block to the *bottom* of
+2. **Another program rewrites `/startup`.** `install_CC_Git status` says
+   `this /startup regenerates itself, so another program owns it` and prints the line to
+   add there instead. See *Why `/usr` and a `/startup` line?* above. Older installers appended their block to the *bottom* of
    `/startup`, where a startup script that errors out or loops forever never reaches
    it. Current `install_CC_Git` detects that and moves it to line 1 — status says
    `path entry is line 1, where it belongs` when it is right, and tells you to run the

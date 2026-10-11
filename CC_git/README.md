@@ -39,6 +39,49 @@ bootstrap https://raw.githubusercontent.com/you/cc-scripts/main/git.lua
 **C. Anything that gets the text onto the disk** (a monitor/editor program, a
 second computer with `rednet`, etc.).
 
+## Getting it onto a computer
+
+**From a floppy (recommended).** Copy `git.lua`, `bootstrap.lua` and `install.lua`
+onto the floppy, then on the computer:
+
+```
+/disk/install
+reboot
+```
+
+`install` puts the programs in `/usr` and appends a path entry to `/startup`, which
+ComputerCraft runs at boot — after that `git` works from any directory. It prefers
+the copy sitting next to it, and falls back to GitHub if there isn't one.
+
+```
+install update     # re-download git.lua + bootstrap.lua from GitHub
+install status     # what is installed, which version, and whether /startup is set up
+```
+
+**With bootstrap, one file at a time** (no floppy needed):
+
+```
+bootstrap https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/git.lua
+```
+
+That writes `git.lua` into the current directory; run it as `git.lua` from there,
+or move it into `/usr` and set the path as `install` does.
+
+## Where it works from
+
+`git` follows your current directory the way git on a desktop does:
+
+```
+mkdir projects
+cd projects
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo   # -> ./Predawn-CC-1.7.10-Program-Repo
+cd Predawn-CC-1.7.10-Program-Repo
+git status                                               # acts on this clone
+```
+
+With no destination, `clone` uses the repository name. `pull`, `push`, `status`,
+`ls` and `branch` all default to the clone in the current directory.
+
 ## Usage
 
 ```

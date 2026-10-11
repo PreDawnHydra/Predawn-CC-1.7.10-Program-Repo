@@ -167,6 +167,10 @@ local function blank(t) return t:gsub("%s+", "") == "" end
 -- generates that startup (swarm_server does) and must not be duplicated or removed
 local function hookPresent(text) return text:find(hookCode(), 1, true) ~= nil end
 
+-- an UNMARKED path line is part of whatever generates this file, so it comes back on
+-- every regeneration. Ours (marked) does not - the generator would drop it again.
+local function foreignHook(text) return hookPresent(text) and not text:find(MARKER, 1, true) end
+
 local function ensureStartup()
   local cur = readText(STARTUP)
   if cur == nil then
@@ -296,7 +300,7 @@ local function status()
   end
   -- warn even when the entry is present: a regenerated startup file gets rewritten,
   -- so a hook that looks fine now is gone the next time that program runs
-  if startupIsRegenerated(startup) then regenerationWarning() end
+  if startupIsRegenerated(startup) and not foreignHook(startup) then regenerationWarning() end
   print("shell path now: " .. tostring(shell.path()))
   return found
 end
@@ -340,7 +344,7 @@ local function main(args)
 
   local before = readText(STARTUP)
   print(ensureStartup())
-  if startupIsRegenerated(before) then regenerationWarning() end
+  if startupIsRegenerated(before) and not foreignHook(before) then regenerationWarning() end
   print(string.format("summary: %d new, %d updated, %d already current, %d kept, %d failed",
     counts.new, counts.updated, counts.current, counts.kept, counts.failed))
   if not okAll then

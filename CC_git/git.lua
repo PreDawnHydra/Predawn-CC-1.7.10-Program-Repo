@@ -16,13 +16,16 @@ Usage:
   git help
 
 Flags:
-  --path=PREFIX   only touch files under this path in the repo
+  --path=PREFIX   only touch files under this path in the repo (remembered in
+                  .gitcfg, so pull and push keep following it)
   --ext=a,b       only touch files with these extensions
   --prune         delete local files that were removed upstream
   --max=BYTES     abort a clone/pull that would download more than BYTES
   --token=TOKEN   use this GitHub token for this command only
   --force         pull: re-download everything
   --all           push: upload every local file, not just tracked/dirty ones
+  --new           clone: allow a --path that does not exist yet, so you can start
+                  a new program folder from the computer
 
 Version notes (verified against ComputerCraft1.75.jar):
   * http only supports GET and POST (no PATCH/PUT/DELETE) -> push creates a
@@ -35,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.0.0"
+git.VERSION = "1.1.0"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -736,7 +739,13 @@ function git.cmdClone(args)
       total = total + (e.size or 0)
     end
   end
-  if #files == 0 then return false, "no files matched the filter" end
+  if #files == 0 then
+    if opts.new then
+      print("nothing under " .. tostring(opts.path) .. " yet - starting an empty folder at " .. sha:sub(1, 8))
+    else
+      return false, "no files matched the filter (typo? add --new to start a new folder)"
+    end
+  end
 
   if opts.max and total > tonumber(opts.max) then
     return false, string.format("clone would download %d bytes (limit %d)", total, tonumber(opts.max))
@@ -1132,11 +1141,13 @@ end
 
 function git.usage()
   print("git.lua " .. git.VERSION .. " for ComputerCraft 1.75 (GitHub only)")
-  print("git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=N]")
+  print("git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=N] [--new]")
   print("git pull  [dest] [--prune] [--force]")
   print("git push  [dest] [message] [--all]")
   print("git status [dest]   git ls [dest]   git branch [dest]")
   print("git token [<pat>]      git auth [owner/repo]")
+  print("a clone's --path/--ext filters are saved in .gitcfg: pull and push follow them,")
+  print("so one program folder at a time needs no full clone.")
 end
 
 function git.run(args)

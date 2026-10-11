@@ -42,7 +42,7 @@ second computer with `rednet`, etc.).
 ## Usage
 
 ```
-git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=BYTES]
+git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=BYTES] [--new]
 git pull  [dest] [--prune] [--force]
 git push  [dest] [message] [--all]
 git status [dest]        git ls [dest]        git branch [dest]
@@ -66,7 +66,38 @@ From another program: `local git = require "git"` — then call
 Flags: `--path=` prefix filter, `--ext=a,b` extension filter, `--prune` delete
 files removed upstream, `--max=` refuse a download larger than N bytes,
 `--force` re-download everything, `--all` push every local file, `--token=` use a
-token for one command.
+token for one command, `--new` allow cloning a folder that does not exist yet.
+
+## One program at a time
+
+`--path=` is stored in `.gitcfg`, so `pull` and `push` keep honouring it — you never
+have to carry the whole repo on the computer.
+
+```
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo main cc_git --path=CC_git/
+git pull cc_git --prune
+git push cc_git "tweak git.lua"
+```
+
+Only `CC_git/` is fetched, and `push` uploads only files under `CC_git/` — the tree
+is built on top of the current one (`base_tree`), so every other folder in the repo
+is left exactly as it is. Keep the trailing slash: `--path=CC_git/` matches the
+folder, while `--path=CC_git` would also match `CC_git_old/`.
+
+To start a program folder that does not exist upstream yet:
+
+```
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo main cc_new --path=MyProg/ --new
+mkdir MyProg            # inside cc_new/
+edit MyProg/turtle.lua
+git push cc_new "add MyProg"
+```
+
+The `--new` clone checks out nothing but the branch head, so the push creates the
+folder. Without `--new` a filter that matches nothing is refused as a typo.
+
+One clone per program is the normal shape: `cc_git`, `cc_swarm`, each with its own
+`.gitcfg` and its own `--path`.
 
 ## Setting up push
 

@@ -12,60 +12,39 @@ API facts this was built against.
 ## Files
 | path | what |
 |---|---|
-| `git.lua` | the program (~33 KB, fits the 1 MB computer HDD) |
-| `bootstrap.lua` | tiny downloader: fetches `git.lua` into the computer |
-| `CC-1.75-QUIRKS.md` | version quirks reference for you and other agents |
-| `tests/` | offline test suite (101 assertions) — runs outside Minecraft |
+| `git.lua` | the program (~42 KB, fits the 1 MB computer HDD) |
+| `install_CC_Git.lua` | installer/updater: puts `git` in `/usr` and on the shell path |
+| `../CC-1.75-QUIRKS.md` | version quirks reference for you and other agents |
+| `tests/` | offline test suite (205 assertions) — runs outside Minecraft |
 
-## Install (pick one)
+## Install
 
-**A. Drop it into the computer's save data (game closed).**
-Each computer/turtle in this world has a folder at
-`saves/LUA_Testing/computer/<id>/` (yours: `0`, `1`, `3`, `4`, `5`). Copy
-`git.lua` in there:
-
-```bash
-cp git.lua ".../saves/LUA_Testing/computer/4/git.lua"
-```
-
-**B. Bootstrap it in-game.** Put `bootstrap.lua` on a floppy (125 KB cap, it is
-~1 KB) or paste it, then run it with a raw URL — for example once you host this
-file in your own repo:
+**From a floppy (simplest).** Put `git.lua` and `install_CC_Git.lua` on the floppy,
+then on the computer:
 
 ```
-bootstrap https://raw.githubusercontent.com/you/cc-scripts/main/git.lua
-```
-
-**C. Anything that gets the text onto the disk** (a monitor/editor program, a
-second computer with `rednet`, etc.).
-
-## Getting it onto a computer
-
-**From a floppy (recommended).** Copy `git.lua`, `bootstrap.lua` and `install.lua`
-onto the floppy, then on the computer:
-
-```
-/disk/install
+/disk/install_CC_Git
 reboot
 ```
 
-`install` puts the programs in `/usr` and appends a path entry to `/startup`, which
-ComputerCraft runs at boot — after that `git` works from any directory. It prefers
-the copy sitting next to it, and falls back to GitHub if there isn't one.
+That copies `git.lua` into `/usr` and appends a path entry to `/startup`, which
+ComputerCraft runs at boot — after that `git` works from any directory. The
+installer prefers the copy sitting next to it and falls back to GitHub.
+
+**Already installed? Update in place:**
 
 ```
-install update     # re-download git.lua + bootstrap.lua from GitHub
-install status     # what is installed, which version, and whether /startup is set up
+install_CC_Git update     # re-download git.lua from GitHub
+install_CC_Git status     # what is installed, which version, is the path entry set
 ```
 
-**With bootstrap, one file at a time** (no floppy needed):
+**No floppy?** Any way of getting the text of `install_CC_Git.lua` onto the
+computer works — `pastebin get`, a second computer over rednet, or straight into
+the save data with the game closed. Once it is there, it fetches `git.lua` itself:
 
+```bash
+cp cc-dev/CC_git/install_CC_Git.lua ".../saves/LUA_Testing/computer/8/install_CC_Git.lua"
 ```
-bootstrap https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/git.lua
-```
-
-That writes `git.lua` into the current directory; run it as `git.lua` from there,
-or move it into `/usr` and set the path as `install` does.
 
 ## Where it works from
 
@@ -234,7 +213,7 @@ git pull cc --force
 ```bash
 cd cc-dev/CC_git/tests
 npm i fengari          # if /tmp/node_modules/fengari is missing
-node run.js            # -> 152 passed, 0 failed
+node run.js            # -> 205 passed, 0 failed
 ```
 
 The suite emulates the CC 1.75 API (including `readAll()` newline behaviour and

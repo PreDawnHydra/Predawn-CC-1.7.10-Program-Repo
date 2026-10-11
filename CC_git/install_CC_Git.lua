@@ -1,10 +1,10 @@
--- install.lua -- put git.lua in a permanent place on this computer and make the
--- command `git` work from any directory.
+-- install_CC_Git.lua -- put git.lua in a permanent place on this computer and
+-- make the command `git` work from any directory.
 --
---   /disk/install        install (or refresh) using the copy sitting next to this
---                        script, falling back to GitHub
---   install update       always re-download from GitHub
---   install status       what is installed, and whether the path entry is in place
+--   /disk/install_CC_Git        install (or refresh) using the copy sitting
+--                             next to this script, falling back to GitHub
+--   install_CC_Git update     always re-download from GitHub
+--   install_CC_Git status     what is installed, and whether the path entry is in place
 --
 -- It writes the programs into /usr and adds /usr to the shell's search path from
 -- /startup, which ComputerCraft runs at boot. After installing, type `reboot`
@@ -18,10 +18,10 @@
 
 -- where to pull from when there is no local copy on this machine
 local RAW     = "https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/"
-local FILES   = { "git.lua", "bootstrap.lua" }
+local FILES   = { "git.lua" }
 local DIR     = "/usr"
 local STARTUP = "/startup"
-local MARKER  = "-- git.lua path entry (added by install.lua)"
+local MARKER  = "-- git.lua path entry (added by install_CC_Git.lua)"
 
 --------------------------------------------------------------------------------
 
@@ -162,7 +162,7 @@ local function main(args)
     return true
   end
   if action ~= "update" and action ~= nil and action ~= "install" then
-    print("usage: install [install|update|status]")
+    print("usage: install_CC_Git [install|update|status]")
     return false
   end
 

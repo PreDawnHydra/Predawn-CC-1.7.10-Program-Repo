@@ -1,9 +1,9 @@
-# TinyFetch
+# StartHere
 
 The smallest possible way to get software onto a ComputerCraft 1.75 computer when
 you have nothing on it yet — no floppy, no clone, no installer.
 
-Pasting into ComputerCraft only delivers **a single line**, so `TinyFetch.lua` is
+Pasting into ComputerCraft only delivers **a single line**, so `StartHere.lua` is
 written as one line with no comments. Copy the whole line below, paste it into the
 `edit` program, save, and you have a downloader. From there you can fetch the real
 tools (`install_CC_Git.lua`, then `git.lua`) from GitHub.
@@ -20,10 +20,10 @@ That is 799 characters, one line, no comments — deliberately. `tests/` in the
 ## Using it
 
 ```
-edit TinyFetch        # paste, Ctrl+S, Ctrl+Q
-TinyFetch             # no arguments: fetches install_CC_Git.lua from the repo
-TinyFetch <url>       # fetch a URL, saving it under its own file name
-TinyFetch <url> <dest># fetch a URL, saving it as <dest>
+edit StartHere            # paste, Ctrl+S, Ctrl+Q
+StartHere                 # no arguments: fetches install_CC_Git.lua from the repo
+StartHere <url>           # fetch a URL, saving it under its own file name
+StartHere <url> <dest>    # fetch a URL, saving it as <dest>
 ```
 
 With no arguments it pulls:
@@ -37,7 +37,7 @@ https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/ma
 1. `http.get` the URL. ComputerCraft 1.75 returns `nil` for a blocked host, a
    network failure **and** a 404 — it cannot tell them apart, so the error message
    says all three.
-2. Reads the body with `readAll()`, which drops the final newline; TinyFetch adds
+2. Reads the body with `readAll()`, which drops the final newline; StartHere adds
    it back so the saved file matches the source byte for byte.
 3. Refuses to overwrite an existing file unless you answer `y`.
 4. Writes the file and reports how many bytes landed.
@@ -45,7 +45,7 @@ https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/ma
 ## Then continue the setup
 
 ```
-TinyFetch
+StartHere
 install_CC_Git
 reboot
 git help
@@ -57,6 +57,6 @@ reboot `git` works from any directory. See the `CC_git` folder for that program.
 ## Limits
 
 - Text only. ComputerCraft 1.75's HTTP layer returns a Java string, so binary files
-  arrive corrupted — TinyFetch cannot fetch images, zips, or anything non-text.
+  arrive corrupted — StartHere cannot fetch images, zips, or anything non-text.
 - The URL must be reachable under the server's `http_whitelist`.
 - It follows no redirects; use the direct `raw.githubusercontent.com` URL.

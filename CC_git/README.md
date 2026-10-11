@@ -49,7 +49,7 @@ cp cc-dev/CC_git/install_CC_Git.lua ".../saves/LUA_Testing/computer/8/install_CC
 ## Start from nothing
 
 If the computer has nothing on it yet, paste one line to get a downloader: see
-`../TinyFetch/README.md` for the line and the cold-start steps.
+`../StartHere/README.md` for the line and the cold-start steps.
 
 ## Where it works from
 

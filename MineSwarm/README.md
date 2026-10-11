@@ -39,12 +39,16 @@ is the exact literal name the ROM looks up, and `/halt` is a computer-wide switc
 
 **Clone folder gotcha.** `--path=` is relative to the *repo* root, and the clone folder is
 where that subtree lands, so cloning into a folder already called `MineSwarm` repeats the
-name — `/MineSwarm/MineSwarm/Swarm_Server/...`. It works, but to keep it tidy give the
-clone a different name:
+name — `/MineSwarm/MineSwarm/Swarm_Server/...`. Give the clone a different name to avoid
+the echo:
 
 ```
 git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo --path=MineSwarm/Swarm_Server/ swarm-server
 ```
+
+This matches desktop git: a clone always contains the **repo root**, and a path filter
+(sparse checkout) hides other paths without ever moving a subtree up to the root. If you
+want `Swarm_Server/` itself to be the root, that is a separate repository, not a flag.
 
 One `/startup` per computer: if both the server and an agent run on the same computer,
 whichever started last owns it.

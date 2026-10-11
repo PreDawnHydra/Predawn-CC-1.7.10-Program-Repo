@@ -46,30 +46,10 @@ the save data with the game closed. Once it is there, it fetches `git.lua` itsel
 cp cc-dev/CC_git/install_CC_Git.lua ".../saves/LUA_Testing/computer/8/install_CC_Git.lua"
 ```
 
-## Start from nothing: paste one line
+## Start from nothing
 
-Pasting in ComputerCraft only takes a single line, so `TinyFetch.lua` is written as
-**one line with no comments** — copy the whole thing (799 characters), then in game
-run `edit TinyFetch`, paste, and save it.
-
-```
-local u,d=... if not u then u="https://raw.githubusercontent.com/PreDawnHydra/Predawn-CC-1.7.10-Program-Repo/main/CC_git/install_CC_Git.lua" end if not d then d=(u:match("([^/]+)$")) or "download.txt" end if fs.exists(d) then io.write("Overwrite "..d.."? y/n ") if read()~="y" then print("cancelled") return end end local r=http.get(u) if not r then printError("fetch failed: no network, blocked host, or 404") return end local c=r.getResponseCode and r.getResponseCode() or 0 local b=r.readAll() or "" r.close() if c>=400 then printError("HTTP "..c) return end if b:sub(-1)~="\n" then b=b.."\n" end local h=fs.open(d,"w") if not h then printError("cannot write "..d) return end h.write(b) h.close() print("wrote "..#b.." bytes to "..d) if d:match("install_CC_Git%.lua$") then print("next: "..d) end
-```
-
-```
-TinyFetch                    # fetches install_CC_Git.lua from this repo
-TinyFetch <url> [dest]       # fetches anything else
-```
-
-Then:
-
-```
-install_CC_Git
-reboot
-```
-
-That is the whole cold start: one pasted line gets you the installer, the installer
-gets you `git`.
+If the computer has nothing on it yet, paste one line to get a downloader: see
+`../TinyFetch/README.md` for the line and the cold-start steps.
 
 ## Where it works from
 

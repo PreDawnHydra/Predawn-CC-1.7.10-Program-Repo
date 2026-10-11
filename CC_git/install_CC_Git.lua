@@ -106,13 +106,50 @@ local function ensureDir(d)
   return fs.isDir(d)
 end
 
--- append the path entry to /startup, once
--- The hook is ONE line, tagged with MARKER, so it is trivial to detect, to keep
+-- The hook is ONE line, tagged with MARKER, so it is easy to detect, to keep
 -- idempotent, and to remove again with `install_CC_Git unhook`.
 local function startupLine()
   return MARKER .. " if not shell.path():find(" .. string.format("%q", DIR) .. ", 1, true) then" ..
     " shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ") end"
 end
+
+-- Signatures of the multi-line block written by older installers. Those blocks sat
+-- at the BOTTOM of /startup, so on a computer with a startup script of its own they
+-- never ran - which is why an upgrade has to migrate them, not just notice that a
+-- marker is present somewhere.
+local function hookTail(line, state)
+  if state == 0 then
+    if line:find("if not shell.path():find(", 1, true) then return 1 end
+  elseif state == 1 then
+    if line:find("shell.setPath(shell.path() .. " .. string.format("%q", ":" .. DIR) .. ")", 1, true) then
+      return 2
+    end
+  elseif state == 2 then
+    if line:match("^%s*end%s*$") then return 3 end
+  end
+  return nil
+end
+
+-- every trace of our hook, old block included
+local function stripHook(text)
+  local kept, state = "", 0
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if line:find(MARKER, 1, true) then
+      state = 0                      -- our one-liner, or the first line of an old block
+    else
+      local nxt = hookTail(line, state)
+      if nxt then
+        state = nxt
+      else
+        state = 0
+        kept = kept .. line .. "\n"
+      end
+    end
+  end
+  return kept
+end
+
+local function blank(t) return t:gsub("%s+", "") == "" end
 
 -- /rom is a read-only JarMount in ComputerCraft 1.75, so /startup in the computer
 -- root is the only boot hook there is. Their startup may error out or run forever,
@@ -123,8 +160,12 @@ local function ensureStartup()
     if not writeText(STARTUP, startupLine() .. "\n") then return "FAILED writing " .. STARTUP end
     return "created " .. STARTUP .. " with the path entry"
   end
-  if cur:find(MARKER, 1, true) then return "path entry already in " .. STARTUP end
-  if not writeText(STARTUP, startupLine() .. "\n" .. cur) then return "FAILED writing " .. STARTUP end
+  local want = startupLine() .. "\n" .. stripHook(cur)
+  if want:gsub("%s+$", "") == cur:gsub("%s+$", "") then
+    return "path entry already at the top of " .. STARTUP
+  end
+  if not writeText(STARTUP, want) then return "FAILED writing " .. STARTUP end
+  if cur:find(MARKER, 1, true) then return "moved the path entry to the top of " .. STARTUP end
   return "added the path entry to the top of " .. STARTUP
 end
 
@@ -132,12 +173,11 @@ end
 local function removeStartup()
   local cur = readText(STARTUP)
   if cur == nil then return "no " .. STARTUP .. " to change" end
-  if not cur:find(MARKER, 1, true) then return "no path entry in " .. STARTUP end
-  local kept = ""
-  for line in (cur .. "\n"):gmatch("([^\n]*)\n") do
-    if not line:find(MARKER, 1, true) then kept = kept .. line .. "\n" end
+  if not cur:find(MARKER, 1, true) and not cur:find("if not shell.path():find(", 1, true) then
+    return "no path entry in " .. STARTUP
   end
-  if kept:gsub("%s+", "") == "" then
+  local kept = stripHook(cur)
+  if blank(kept) then
     -- nothing of theirs was in there, so take the file away too
     local ok = pcall(fs.delete, STARTUP)
     return ok and "removed the path entry and " .. STARTUP or "removed the path entry from " .. STARTUP
@@ -211,7 +251,15 @@ local function status()
     end
   end
   local startup = readText(STARTUP)
-  print(STARTUP .. ": " .. ((startup and startup:find(MARKER, 1, true)) and "has the path entry" or "no path entry"))
+  if startup == nil then
+    print(STARTUP .. ": no startup script at all - git will not be on the path after a reboot")
+  elseif startup:match("^[^\n]*"):find(MARKER, 1, true) then
+    print(STARTUP .. ": path entry is line 1, where it belongs")
+  elseif startup:find(MARKER, 1, true) then
+    print(STARTUP .. ": path entry is buried below your own startup - run install_CC_Git to move it")
+  else
+    print(STARTUP .. ": no path entry - run install_CC_Git")
+  end
   print("shell path now: " .. tostring(shell.path()))
   return found
 end

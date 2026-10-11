@@ -42,6 +42,10 @@ So the installer puts the programs in `/usr` and adds **one line at the top of
 install_CC_Git unhook     # remove our line again, leaving your startup alone
 ```
 
+Re-running the installer also **migrates** the old appended block: it strips every trace
+of the previous hook and writes the new one at the top, so an upgrade from an earlier
+version fixes itself.
+
 If you would rather not touch `/startup` at all, both of these work with no setup:
 
 ```
@@ -103,6 +107,27 @@ git status                                               # acts on this clone
 
 With no destination, `clone` uses the repository name. `pull`, `push`, `status`,
 `ls` and `branch` all default to the clone in the current directory.
+
+### `git: not found` — check these in order
+
+```
+install_CC_Git status     # says exactly where the path entry is
+```
+
+1. **You have not rebooted.** `shell.setPath` only changes the shell that calls it, so
+   a program can never fix the path of the shell that launched it. One `reboot`.
+2. **The entry is buried.** Older installers appended their block to the *bottom* of
+   `/startup`, where a startup script that errors out or loops forever never reaches
+   it. Current `install_CC_Git` detects that and moves it to line 1 — status says
+   `path entry is line 1, where it belongs` when it is right, and tells you to run the
+   installer when it is not.
+3. **A floppy is in the drive.** If a mounted floppy carries a `startup` file, the ROM
+   startup runs *that* instead of the computer's `/startup` — the hook never executes.
+4. **Your own startup calls `shell.setPath(...)`.** That replaces the path outright; add
+   `/usr` to it yourself.
+
+And with no hook at all, both of these always work: `/usr/git status`, or
+`cd <clone folder>` then `git status`.
 
 ## Usage
 

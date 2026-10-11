@@ -73,9 +73,14 @@ local function localCopy(names)
   -- paths against the computer root, so "/" also covers a copy StartHere just saved.
   dirs[#dirs + 1] = "/"
   for _, d in ipairs(dirs) do
-    for _, name in ipairs(names) do
-      local p = join(d, name)
-      if fs.exists(p) and not fs.isDir(p) then return p end
+    -- never source from the folder we install into: once `install_CC_Git` lives in
+    -- DIR it is on the shell path, so running it from there would find the old
+    -- installed copy and install that over itself, forever
+    if d ~= DIR then
+      for _, name in ipairs(names) do
+        local p = join(d, name)
+        if fs.exists(p) and not fs.isDir(p) then return p end
+      end
     end
   end
   return nil

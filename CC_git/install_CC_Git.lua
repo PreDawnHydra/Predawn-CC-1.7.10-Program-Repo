@@ -93,8 +93,10 @@ end
 
 local function ensureDir(d)
   if fs.exists(d) then return fs.isDir(d) end
-  local ok = fs.makeDir(d)
-  return ok and fs.isDir(d)
+  -- ComputerCraft 1.75: fs.makeDir returns nothing and raises on failure, so the
+  -- only honest check is whether the directory exists afterwards.
+  pcall(fs.makeDir, d)
+  return fs.isDir(d)
 end
 
 -- append the path entry to /startup, once

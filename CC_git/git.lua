@@ -492,7 +492,7 @@ function git.mkdirs(path)
         warn("replacing local file " .. acc .. " with a directory")
         fs.delete(acc)
       end
-      if not fs.exists(acc) then fs.makeDir(acc) end
+      if not fs.exists(acc) then pcall(fs.makeDir, acc) end
     end
   end
 end

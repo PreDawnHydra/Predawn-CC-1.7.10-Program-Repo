@@ -996,7 +996,8 @@ function git.cmdPush(args)
     end
   end
   if #todo == 0 then print("nothing to push") return true end
-  table.sort(todo)
+  -- todo holds { localName, path, size }, so sort by the repository path
+  table.sort(todo, function(a, b) return a.path < b.path end)
 
   print(string.format("uploading %d file(s)", #todo))
   local treeEntries = {}

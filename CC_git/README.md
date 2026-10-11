@@ -37,12 +37,18 @@ matches program names exactly and never appends `.lua`) and installs the updater
 runs at boot; after that `git` works from any directory. The installer prefers a
 copy sitting next to it and falls back to GitHub.
 
-**Already installed? Update in place:**
+**Running it again is safe.** With no arguments it installs anything that is
+missing and refreshes anything that is already there; files that already match are
+left alone, and a failed download never removes a working copy.
 
 ```
-install_CC_Git update     # re-download git.lua and the updater from GitHub
+install_CC_Git            # install what is missing, refresh what is present
+install_CC_Git update     # ignore local copies, re-download from GitHub
 install_CC_Git status     # what is installed, which version, is the path entry set
 ```
+
+It ends with a summary line, e.g.
+`summary: 0 new, 1 updated, 1 already current, 0 kept, 0 failed`.
 
 **No floppy?** Any way of getting the text of `install_CC_Git.lua` onto the
 computer works — `pastebin get`, a second computer over rednet, or straight into

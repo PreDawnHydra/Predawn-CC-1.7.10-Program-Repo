@@ -1,10 +1,12 @@
 -- install_CC_Git.lua -- put git.lua in a permanent place on this computer and
 -- make the command `git` work from any directory.
 --
---   /disk/install_CC_Git        install (or refresh) using the copy sitting
---                             next to this script, falling back to GitHub
---   install_CC_Git update     always re-download from GitHub
---   install_CC_Git status     what is installed, and whether the path entry is in place
+--   install_CC_Git           install anything missing, refresh anything present
+--   install_CC_Git update    ignore local copies and re-download from GitHub
+--   install_CC_Git status    what is installed, and whether the path entry is in place
+--
+-- Running it again is safe: files that already match are left alone, and a failed
+-- download never removes a working copy.
 --
 -- It writes the programs into /usr and adds /usr to the shell's search path from
 -- /startup, which ComputerCraft runs at boot. After installing, type `reboot`
@@ -115,10 +117,16 @@ local function ensureStartup()
   return "added the path entry to " .. STARTUP
 end
 
-local function one(item, fromNet)
+-- install, refresh or leave alone. Returns ok, note where note is one of
+-- new / updated / current / kept / failed
+local function one(item, preferNet)
   local name, target = item[1], item[2] or item[1]
+  local dest = join(DIR, target)
+  local existing = nil
+  if fs.exists(dest) and not fs.isDir(dest) then existing = readText(dest) end
+
   local text, source
-  if not fromNet then
+  if not preferNet then
     local p = localCopy({ name, target })
     if p then
       text = readText(p)
@@ -130,21 +138,34 @@ local function one(item, fromNet)
     -- hands back two values, or source ends up nil and the print below throws
     local body, err = fetch(RAW .. name)
     if not body then
-      printError("  ! " .. name .. ": " .. tostring(err))
-      return false
+      if existing then
+        printError("  ! " .. target .. ": " .. tostring(err) .. " - keeping the installed copy")
+        return true, "kept"
+      end
+      printError("  ! " .. target .. ": " .. tostring(err))
+      return false, "failed"
     end
     text, source = body, RAW .. name
   end
+
   if #text < 200 then
-    printError("  ! " .. name .. ": only " .. #text .. " bytes - that does not look like the program")
-    return false
+    printError("  ! " .. target .. ": only " .. #text .. " bytes - that does not look like the program")
+    if existing then return true, "kept" end
+    return false, "failed"
   end
-  if not writeText(join(DIR, target), text) then
-    printError("  ! " .. target .. ": cannot write " .. join(DIR, target) .. " (disk full?)")
-    return false
+
+  if existing == text then
+    print(string.format("  %-16s %6d bytes  v%-7s  up to date", target, #text, versionOf(text)))
+    return true, "current"
   end
-  print(string.format("  %-16s %6d bytes  v%-7s from %s", target, #text, versionOf(text), tostring(source)))
-  return true
+
+  if not writeText(dest, text) then
+    printError("  ! " .. target .. ": cannot write " .. dest .. " (disk full?)")
+    return false, "failed"
+  end
+  print(string.format("  %-16s %6d bytes  v%-7s  %s from %s", target, #text, versionOf(text),
+    existing and "updated" or "new", tostring(source)))
+  return true, existing and "updated" or "new"
 end
 
 local function status()
@@ -173,23 +194,29 @@ local function main(args)
     return true
   end
   if action ~= "update" and action ~= nil and action ~= "install" then
-    print("usage: install_CC_Git [install|update|status]")
+    print("usage: install_CC_Git [update|status]")
     return false
   end
 
-  local fromNet = (action == "update")
-  print((fromNet and "downloading into " or "installing into ") .. DIR)
+  -- no arguments: install what is missing, refresh what is already there.
+  -- "update" skips any copy sitting next to the script and goes to GitHub.
+  local preferNet = (action == "update")
+  print((preferNet and "updating " .. DIR .. " from GitHub" or "installing or updating " .. DIR))
   if not ensureDir(DIR) then
     printError("cannot create " .. DIR)
     return false
   end
 
-  local okAll = true
+  local counts, okAll = { new = 0, updated = 0, current = 0, kept = 0, failed = 0 }, true
   for _, item in ipairs(FILES) do
-    if not one(item, fromNet) then okAll = false end
+    local ok, note = one(item, preferNet)
+    counts[note] = (counts[note] or 0) + 1
+    if not ok then okAll = false end
   end
 
   print(ensureStartup())
+  print(string.format("summary: %d new, %d updated, %d already current, %d kept, %d failed",
+    counts.new, counts.updated, counts.current, counts.kept, counts.failed))
   if not okAll then
     printError("installed with errors - check the messages above")
     return false

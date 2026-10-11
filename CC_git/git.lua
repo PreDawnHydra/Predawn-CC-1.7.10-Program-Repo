@@ -890,7 +890,13 @@ function git.cmdPull(args)
   end
   for _, path in ipairs(removed) do
     if opts.prune then
-      fs.delete(pjoin(dest, git.repoToLocal(cfg.filter, path)))
+      -- the manifest can name a repository path with no local counterpart (a filter
+      -- that was repaired, for instance), and fs.delete raises on a missing path
+      local localPath = pjoin(dest, git.repoToLocal(cfg.filter, path))
+      if exists(localPath) then
+        local okDel, err = pcall(fs.delete, localPath)
+        if not okDel then warn("  ! could not delete " .. localPath .. ": " .. tostring(err)) end
+      end
       cfg.files[path] = nil
       printf("  del   %s", path)
     else

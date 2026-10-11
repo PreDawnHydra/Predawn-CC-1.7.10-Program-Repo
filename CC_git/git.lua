@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.2.0"
+git.VERSION = "1.2.1"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -590,15 +590,28 @@ function git.repoToLocal(filter, path)
     -- a filter that names one exact file strips to nothing, so keep the file name
     local rel = string.sub(path, #pfx + 1)
     if rel == "" then rel = string.match(path, "[^/]+$") end
-    return rel
+    return string.gsub(rel, "^/+", "")
   end
   return path
 end
 
 function git.localToRepo(filter, path)
   local pfx = git.flatPrefix(filter)
-  if pfx then return pfx .. path end
-  return path
+  if not pfx then return path end
+  -- an exact-file filter: the local file IS that repository file
+  if not endsWith(pfx, "/") then return pfx end
+  return pfx .. path
+end
+
+-- A --path filter is a directory unless it names one exact file, and the trailing
+-- slash is load-bearing: "MineSwarm/Swarm_Server" .. "swarm/app" glues together into
+-- "MineSwarm/Swarm_Serverswarm/app". Normalize once, at clone time.
+local function normalizeFilter(p, tree)
+  if p == nil or endsWith(p, "/") then return p end
+  for _, e in ipairs(tree or {}) do
+    if e.type == "blob" and e.path == p then return p end
+  end
+  return p .. "/"
 end
 
 -- last segment of a --path filter, used as the default destination:
@@ -633,6 +646,13 @@ function git.loadCfg(dir)
   if not s then return nil end
   local ok = textutils.unserialize(s)
   if type(ok) ~= "table" then return nil end
+  -- repair a filter saved without its trailing slash (git.lua 1.2.0 did that when
+  -- --path was typed without one): an existing flat clone then pushes to the right
+  -- repository paths without needing to be re-cloned
+  local f = ok.filter
+  if f and f.path and f.flat and not endsWith(f.path, "/") and not (ok.files and ok.files[f.path]) then
+    f.path = f.path .. "/"
+  end
   return ok
 end
 
@@ -774,6 +794,10 @@ function git.cmdClone(args)
   if treeData.truncated then
     return false, "repository tree is too large to list; use --path=DIR to clone a subdirectory"
   end
+
+  -- needs the tree: a filter that matches no single file is a directory, and its
+  -- trailing slash is what keeps "MineSwarm/Swarm_Server" + "swarm/app" apart
+  filter.path = normalizeFilter(filter.path, treeData.tree)
 
   local keep = git.makeFilter(opts)
   local files, total = {}, 0

@@ -195,6 +195,10 @@ in-game use, and `--keep-path` gets git's layout back:
 git clone you/repo --path=MineSwarm/Swarm_Server/ --keep-path   # -> repo/MineSwarm/Swarm_Server/...
 ```
 
+`--path` works with or without a trailing slash — `--path=MineSwarm/Swarm_Server` and
+`--path=MineSwarm/Swarm_Server/` mean the same thing, and a clone made before that was
+fixed repairs its own `.gitcfg` the next time you pull or push.
+
 The prefix is saved in `.gitcfg`, so `pull` and `push` translate local names back to
 repository names — a flat clone pushes `swarm_server.lua` to
 `MineSwarm/Swarm_Server/swarm_server.lua`. Clones made before this change keep their

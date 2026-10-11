@@ -14,6 +14,26 @@
 -- ===========================================================================
 
 ---------------------------------------------------------------------------
+-- Where is this program? It may sit at the computer root or inside a folder a
+-- `git clone` created, so nothing about its own location is hard-coded.
+-- shell.getRunningProgram() gives the path the shell is running, and fs.getDir
+-- cuts at the last slash -- it returns "" for a file at the root, which is why
+-- ROOT defaults to "/".
+---------------------------------------------------------------------------
+local ROOT = "/"
+if shell and shell.getRunningProgram then
+    local ok, me = pcall(shell.getRunningProgram)
+    if ok and type(me) == "string" and me ~= "" then
+        local ok2, dir = pcall(fs.getDir, me)
+        if ok2 and type(dir) == "string" and dir ~= "" then ROOT = dir .. "/" end
+    end
+end
+local SELF = ROOT .. "swarm_server.lua"
+
+-- /startup and /halt stay at the computer root on purpose: "startup" is the exact
+-- literal name rom/startup looks up, and /halt is a computer-wide kill switch.
+
+---------------------------------------------------------------------------
 -- Self-install auto-start (written to THIS computer's own filesystem)
 ---------------------------------------------------------------------------
 local function installAutoStart()
@@ -25,7 +45,7 @@ local function installAutoStart()
         '        print("swarm_server auto-start is halted (delete /halt to re-enable)")',
         "        break",
         "    end",
-        '    local ok, err = shell.run("/swarm_server.lua")',
+        '    local ok, err = shell.run("' .. SELF .. '")',
         '    if not ok then print("swarm_server: " .. tostring(err)) end',
         "    sleep(3)",
         "end",
@@ -47,13 +67,13 @@ installAutoStart()
 -- which keeps the extension -- "/swarm/theme.lua" would create a global called
 -- "theme.lua" and leave `theme` nil. CC's own rom/apis files are extension-less
 -- for exactly this reason.
-local MODULES = { "/swarm/theme", "/swarm/widget", "/swarm/widgets",
-                  "/swarm/app", "/swarm/core", "/swarm/screens" }
+local MODULES = { ROOT .. "swarm/theme", ROOT .. "swarm/widget", ROOT .. "swarm/widgets",
+                  ROOT .. "swarm/app", ROOT .. "swarm/core", ROOT .. "swarm/screens" }
 
 for i = 1, #MODULES do
     if not fs.exists(MODULES[i]) then
         print("ERROR: missing " .. MODULES[i])
-        print("Restore the /swarm/ folder, then re-run swarm_server.lua")
+        print("Restore the swarm/ folder that sits next to swarm_server.lua, then re-run it")
         return
     end
     if not os.loadAPI(MODULES[i]) then

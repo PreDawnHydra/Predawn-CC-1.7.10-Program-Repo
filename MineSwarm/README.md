@@ -23,6 +23,32 @@ so `swarm/theme.lua` would create a global called `theme.lua` and leave `theme` 
 /swarm/               the modules that program loads
 ```
 
+## Run it from wherever you cloned it
+
+Nothing about the program's own location is hard-coded. It asks the shell which file it
+is running (`shell.getRunningProgram()`), takes the folder from that
+(`fs.getDir()` — which returns `""` for a file at the root, hence the default `"/"`),
+and from there:
+
+- modules load from `<that folder>/swarm/...`
+- the `/startup` it writes relaunches `<that folder>/swarm_server.lua`
+
+So a clone anywhere works — `/swarm_server.lua`, `/MineSwarm/Swarm_Server/swarm_server.lua`,
+even a floppy. `/startup` and `/halt` deliberately stay at the computer root: `startup`
+is the exact literal name the ROM looks up, and `/halt` is a computer-wide switch.
+
+**Clone folder gotcha.** `--path=` is relative to the *repo* root, and the clone folder is
+where that subtree lands, so cloning into a folder already called `MineSwarm` repeats the
+name — `/MineSwarm/MineSwarm/Swarm_Server/...`. It works, but to keep it tidy give the
+clone a different name:
+
+```
+git clone PreDawnHydra/Predawn-CC-1.7.10-Program-Repo --path=MineSwarm/Swarm_Server/ swarm-server
+```
+
+One `/startup` per computer: if both the server and an agent run on the same computer,
+whichever started last owns it.
+
 ## Auto-start
 
 Each program writes `/startup` (no extension — that is the exact name the ROM looks

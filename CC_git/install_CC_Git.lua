@@ -101,8 +101,14 @@ local function fetch(url)
 end
 
 local function versionOf(text)
-  if not text then return "?" end
-  return text:match('git%.VERSION%s*=%s*"([^"]+)"') or "?"
+  if not text then return nil end
+  return text:match('git%.VERSION%s*=%s*"([^"]+)"')
+end
+
+-- the updater has no version of its own, so print "-" rather than a misleading "v?"
+local function verCol(text)
+  local v = versionOf(text)
+  return v and ("v" .. v) or "-"
 end
 
 local function ensureDir(d)
@@ -248,7 +254,8 @@ local function one(item, preferNet)
   end
 
   if existing == text then
-    print(string.format("  %-16s %6d bytes  v%-7s  up to date", target, #text, versionOf(text)))
+    print(string.format("  %-16s %6d bytes  %-8s  up to date, from %s",
+      target, #text, verCol(text), tostring(source)))
     return true, "current"
   end
 
@@ -256,7 +263,7 @@ local function one(item, preferNet)
     printError("  ! " .. target .. ": cannot write " .. dest .. " (disk full?)")
     return false, "failed"
   end
-  print(string.format("  %-16s %6d bytes  v%-7s  %s from %s", target, #text, versionOf(text),
+  print(string.format("  %-16s %6d bytes  %-8s  %s from %s", target, #text, verCol(text),
     existing and "updated" or "new", tostring(source)))
   return true, existing and "updated" or "new"
 end
@@ -269,7 +276,8 @@ local function status()
     local p = join(DIR, target)
     if fs.exists(p) and not fs.isDir(p) then
       found = true
-      print(string.format("  %-16s %6d bytes  version %s", target, fs.getSize(p), versionOf(readText(p))))
+      print(string.format("  %-16s %6d bytes  version %s", target, fs.getSize(p),
+        versionOf(readText(p)) or "n/a"))
     else
       print("  " .. target .. ": not installed")
     end
@@ -352,6 +360,10 @@ local function main(args)
   if startupIsRegenerated(before) and not foreignHook(before) then regenerationWarning() end
   print(string.format("summary: %d new, %d updated, %d already current, %d kept, %d failed",
     counts.new, counts.updated, counts.current, counts.kept, counts.failed))
+  if counts.current > 0 and counts.new == 0 and counts.updated == 0 then
+    print("already current. GitHub's raw file CDN can serve a copy up to five minutes old,")
+    print("so if the version above is not what you expect, run this again in a few minutes.")
+  end
   if not okAll then
     printError("installed with errors - check the messages above")
     return false

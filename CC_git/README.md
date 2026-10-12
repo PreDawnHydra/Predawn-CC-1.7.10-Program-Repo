@@ -113,10 +113,13 @@ Nothing to do is one line: `git 1.4.0 - up to date`. Problems are still printed 
 full - a download that failed, a disk that is full - because a quiet failure is worse
 than a noisy one. `install_CC_Git status` is where the detail lives.
 
-**It pulls itself first, so one run is enough.** The copy that runs only knows the
-files it shipped with, so the installer re-pulls itself, reads the file list out of the
-new copy, and installs from that - a release that adds a new file lands in the same
-run, no need to run it twice.
+**It updates itself, then runs the new copy.** The installer re-pulls itself first. If
+that changed anything, it writes the new copy and hands the rest of the job to it
+(`shell.run /usr/install_CC_Git --reran`), so you never type the command twice and the
+work is done by current code. `--reran` stops the child from doing it again, so a repo
+that keeps changing cannot loop. If it cannot re-run itself, it says so
+(`! could not run the new copy - finishing with the old one`) and still installs
+everything, using the file list read out of the copy it just downloaded.
 
 ### Tab completion
 `git <TAB>` completes the command words, `--<TAB>` completes the flags, and a path

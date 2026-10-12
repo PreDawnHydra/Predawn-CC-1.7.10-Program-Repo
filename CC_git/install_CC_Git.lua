@@ -387,7 +387,13 @@ local function status()
 end
 
 local function main(args)
-  local action = args[1]
+  -- `--reran` marks the second copy: it must not re-exec again, or a repo that keeps
+  -- changing under us could loop. Anything else that is not a flag is the action.
+  local action, reran = nil, false
+  for _, a in ipairs(args or {}) do
+    if a == "--reran" then reran = true
+    elseif action == nil and type(a) == "string" and a:sub(1, 2) ~= "--" then action = a end
+  end
   if action == "status" then
     status()
     return true
@@ -442,6 +448,19 @@ local function main(args)
         else
           print(string.format("install_CC_Git %s",
             verPair(installerVersion(installedSelf), installerVersion(selfText))))
+          -- We just replaced ourselves, so the code still running is the OLD copy and
+          -- cannot know about behaviour changes. Run the new copy instead of asking the
+          -- user to type the same command twice. rom/programs/shell uses os.run's
+          -- return value, so shell.run waits for the program to finish; --reran stops
+          -- the child from doing this again.
+          if not reran then
+            local ok = false
+            if shell and shell.run then
+              ok = pcall(shell.run, join(DIR, "install_CC_Git"), "--reran")
+            end
+            if ok then return true end
+            printError("! could not run the new copy - finishing with the old one")
+          end
         end
       else
         printError("! install_CC_Git: cannot write " .. DIR .. " (disk full?)")

@@ -1158,7 +1158,7 @@ function git.cmdPush(args)
   end
   -- GitHub rejects a tree entry that deletes a path missing from the base tree, so
   -- anything already gone upstream is dropped from the request.
-  if head ~= cfg.commit then
+  if head and head ~= cfg.commit then
     local baseTree = git.fetchTree(cfg.owner, cfg.repo, head)
     if baseTree then
       local present = {}

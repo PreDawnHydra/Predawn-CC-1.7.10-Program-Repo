@@ -320,6 +320,10 @@ local function status()
     end
     if at == nil then
       print(STARTUP .. ": no path entry - run install_CC_Git")
+    elseif lines[at]:find(MARKER, 1, true) and lines[at]:find(hookCode(), 1, true) then
+      -- marker and code on one line: the marker comments the code out, so the entry
+      -- looks perfect and does nothing at all
+      print(STARTUP .. ": path entry is line " .. at .. " but COMMENTED OUT - run install_CC_Git")
     else
       -- comments and blank lines above it cannot stop it running
       local blocked = false

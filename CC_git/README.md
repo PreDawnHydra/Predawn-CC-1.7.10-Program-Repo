@@ -34,12 +34,14 @@ way to install `git` the way `list` and `copy` ship. The default shell path is
 `.:/rom/programs:...` and every entry in it except `.` is read-only, which leaves two
 options: a folder you add yourself, or the current directory.
 
-So the installer puts the programs in `/usr` and adds **one line at the top of
+So the installer puts the programs in `/usr` and adds a **two-line hook at the top of
 `/startup`** — the only boot hook ComputerCraft 1.75 has. Top, not bottom: an existing
 `/startup` may error out or block forever, and anything appended after it never runs.
+The marker comment and the code are on **separate lines**; a `--` marker in front of the
+code comments the code out, and the hook silently does nothing.
 
 ```
-install_CC_Git unhook     # remove our line again, leaving your startup alone
+install_CC_Git unhook     # remove our hook again, leaving your startup alone
 ```
 
 If some **other program writes `/startup`**, our line cannot survive: that program owns

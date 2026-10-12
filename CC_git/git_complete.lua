@@ -54,15 +54,19 @@ local function completePath(sh, text)
 
   local base
   if dirPart == "" then
-    base = sh.dir()
+    base = sh.dir() or ""
   elseif sh.resolve then
     base = sh.resolve(dirPart)
   else
     base = dirPart
   end
 
+  -- fs.list RAISES in 1.75 ("No such file", "Not a directory"), so check first. The
+  -- shell calls this while you type, and an error there kills the shell and turns the
+  -- computer off.
+  if not fs.isDir(base) then return {} end
   local names = fs.list(base)
-  if not names then return {} end
+  if type(names) ~= "table" then return {} end
 
   local out = {}
   for i = 1, #names do
@@ -80,13 +84,21 @@ local function completePath(sh, text)
   return out
 end
 
-local function completeGit(sh, argIndex, text, previous)
+local function completeArgs(sh, argIndex, text, previous)
   text = text or ""
   if argIndex == 1 then return filter(COMMANDS, text) end
   if text:sub(1, 1) == "-" then return filter(FLAGS, text, flagDone) end
-  -- `git clone owner/repo` and `git auth owner/repo`: complete the local path only
-  -- once a slash is in the word, so typing a repo name is never interrupted
   return completePath(sh, text)
+end
+
+-- bios.lua re-runs completion after every key AND every paste, and the shell does not
+-- catch anything the completer throws: the error escapes into the read loop and the
+-- computer turns off. So nothing in here is allowed to raise - pcall is the last line
+-- of defence, the guards above are the first.
+local function completeGit(sh, argIndex, text, previous)
+  local ok, results = pcall(completeArgs, sh, argIndex, text, previous)
+  if ok then return results end
+  return nil
 end
 
 local function register()

@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.4.0"
+git.VERSION = "1.4.1"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -518,7 +518,7 @@ end
 function git.walk(dir, prefix, out)
   out = out or {}
   prefix = prefix or ""
-  for _, name in ipairs(fs.list(dir) or {}) do
+  for _, name in ipairs(git.lsDir(dir)) do
     local rel = prefix == "" and name or pjoin(prefix, name)
     local abs = pjoin(dir, name)
     if fs.isDir(abs) then
@@ -628,7 +628,7 @@ function git.missingCfgMsg(dest)
   if not fs.exists(dest) then
     what = "directory does not exist"
   else
-    local names = fs.list(dest) or {}
+    local names = git.lsDir(dest)
     if #names == 0 then
       what = "directory is empty"
     else
@@ -1287,6 +1287,15 @@ function git.usage()
   print("so one program folder at a time needs no full clone.")
   print("with --path, the folder named by the path IS the clone (no repo folders inside it);")
   print("add --keep-path for desktop git's layout, where the repository root is kept.")
+end
+
+-- fs.list RAISES in ComputerCraft 1.75 ("No such file", "Not a directory") - it does
+-- not return nil, so `fs.list(x) or {}` is not a guard. Everything that probes a
+-- directory goes through here.
+function git.lsDir(p)
+  local ok, r = pcall(fs.list, p)
+  if ok and type(r) == "table" then return r end
+  return {}
 end
 
 -- the command words, in one place: git usage, and git_complete.lua, both need them

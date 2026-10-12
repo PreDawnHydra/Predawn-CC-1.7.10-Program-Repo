@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.4.1"
+git.VERSION = "1.5.0"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -336,9 +336,15 @@ local function escString(s)
   return table.concat(out)
 end
 
+-- A Lua table cannot hold a nil field, so `sha = nil` would simply vanish from the
+-- payload. Deleting a path needs a real JSON null, hence a sentinel.
+local NULL = setmetatable({}, { __tostring = function() return "null" end })
+json.NULL = NULL
+
 local function encode(v)
   local t = type(v)
   if v == nil then return "null" end
+  if v == NULL then return "null" end
   if t == "boolean" then return tostring(v) end
   if t == "number" then
     if v == math.floor(v) and math.abs(v) < 2^31 then return string.format("%d", v) end
@@ -595,6 +601,7 @@ function git.repoToLocal(filter, path)
   return path
 end
 
+-- repo path -> path inside the clone (the inverse of localToRepo)
 function git.localToRepo(filter, path)
   local pfx = git.flatPrefix(filter)
   if not pfx then return path end
@@ -965,6 +972,10 @@ function git.cmdStatus(args)
   for _, m in ipairs(dirty) do printf("  modified  %s", m) end
   for _, m in ipairs(untracked) do printf("  new       %s", m) end
   if #dirty == 0 and #untracked == 0 and #missing == 0 then print("  clean") end
+  if #missing > 0 then
+    print(#missing .. " missing file(s): push will remove them from the repository" ..
+          " (use --no-delete to keep them)")
+  end
   return true
 end
 
@@ -1033,7 +1044,34 @@ function git.cmdPush(args)
       end
     end
   end
-  if #todo == 0 then print("nothing to push") return true end
+  -- A tracked file that is gone locally is a deletion. GitHub removes a path when a
+  -- tree entry carries `sha: null` (docs.github.com/rest/git/trees), which is a POST -
+  -- so a removal made in-game CAN reach the repository. `--no-delete` skips them.
+  local deletions = {}
+  for path in pairs(cfg.files) do
+    local rel = git.repoToLocal(cfg.filter, path)
+    if rel and keep(path) and localFiles[rel] == nil then
+      local parent = fs.getDir(rel)
+      if opts["no-delete"] then
+        deletions[#deletions + 1] = { path = path, localName = rel, skip = "--no-delete" }
+      elseif parent == "" or parent == "." or fs.isDir(pjoin(dest, parent)) then
+        deletions[#deletions + 1] = { path = path, localName = rel }
+      else
+        -- the folder itself is missing, which smells like a partial clone rather than a
+        -- deliberate delete, so nothing under it gets removed
+        deletions[#deletions + 1] = { path = path, localName = rel,
+                                      skip = "its folder is missing locally (partial clone?)" }
+      end
+    end
+  end
+
+  local removes = {}
+  for _, d in ipairs(deletions) do
+    if d.skip then warn("  ! " .. d.path .. " not removed - " .. d.skip)
+    else removes[#removes + 1] = d end
+  end
+
+  if #todo == 0 and #removes == 0 then print("nothing to push") return true end
   -- todo holds { localName, path, size }, so sort by the repository path
   table.sort(todo, function(a, b) return a.path < b.path end)
 
@@ -1054,12 +1092,13 @@ function git.cmdPush(args)
       for _, e in ipairs(treeData.tree) do if e.type == "blob" then remote[e.path] = e end end
       local mine = {}
       for _, item in ipairs(todo) do mine[item.path] = true end
+      for _, d in ipairs(deletions) do if not d.skip then mine[d.path] = true end end
       local clash, upstream = {}, {}
       for path, e in pairs(remote) do
         local meta = cfg.files[path]
         if not meta or meta.sha ~= e.sha then
           upstream[#upstream + 1] = path
-          if mine[path] then clash[#clash + 1] = path end
+          if mine[path] then clash[#clash + 1] = path .. " (you deleted it)" end
         end
       end
       for path in pairs(cfg.files) do
@@ -1085,6 +1124,10 @@ function git.cmdPush(args)
   end
 
   print(string.format("uploading %d file(s)", #todo))
+  if #removes > 0 then
+    print("removing " .. #removes .. " file(s) from the repository")
+    for _, d in ipairs(removes) do print("  - " .. d.path) end
+  end
   local treeEntries = {}
   local blobHintShown = false
   for i, item in ipairs(todo) do
@@ -1113,6 +1156,26 @@ function git.cmdPush(args)
       end
     end
   end
+  -- GitHub rejects a tree entry that deletes a path missing from the base tree, so
+  -- anything already gone upstream is dropped from the request.
+  if head ~= cfg.commit then
+    local baseTree = git.fetchTree(cfg.owner, cfg.repo, head)
+    if baseTree then
+      local present = {}
+      for _, e in ipairs(baseTree.tree) do if e.type == "blob" then present[e.path] = true end end
+      local stillThere = {}
+      for _, d in ipairs(removes) do
+        if present[d.path] then stillThere[#stillThere + 1] = d
+        else warn("  ! " .. d.path .. " is already gone on " .. cfg.branch) end
+      end
+      removes = stillThere
+    end
+  end
+  for _, d in ipairs(removes) do
+    -- `sha: null` is how the trees API deletes a path
+    treeEntries[#treeEntries + 1] = { path = d.path, mode = "100644", type = "blob",
+                                      sha = git.json.NULL }
+  end
   if #treeEntries == 0 then return false, "no files uploaded" end
 
   local tree, terr = git.apiPost("/repos/" .. cfg.owner .. "/" .. cfg.repo .. "/git/trees",
@@ -1125,6 +1188,8 @@ function git.cmdPush(args)
     tree = tree.sha,
   })
   if not commit or not commit.sha then return false, "create commit failed: " .. tostring(cerr) end
+
+  for _, d in ipairs(removes) do cfg.files[d.path] = nil end
 
   local stamp = tostring(commit.sha):sub(1, 8)
   local tmpBranch = "cc-sync/" .. stamp
@@ -1279,7 +1344,7 @@ function git.usage()
   print("git.lua " .. git.VERSION .. " for ComputerCraft 1.75 (GitHub only)")
   print("git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=N] [--new]")
   print("git pull  [dest] [--prune] [--force]")
-  print("git push  [dest] [message] [--all] [--force]")
+  print("git push  [dest] [message] [--all] [--force] [--no-delete]")
   print("git status [dest]   git ls [dest]   git branch [dest]")
   print("tab completion: install_CC_Git runs git_complete at boot; `git` also registers it")
   print("git token [<pat>]      git auth [owner/repo]")

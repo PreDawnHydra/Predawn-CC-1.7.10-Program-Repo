@@ -205,7 +205,7 @@ And with no hook at all, both of these always work: `/usr/git status`, or
 ```
 git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=BYTES] [--new]
 git pull  [dest] [--prune] [--force]
-git push  [dest] [message] [--all] [--force]
+git push  [dest] [message] [--all] [--force] [--no-delete]
 git status [dest]        git ls [dest]        git branch [dest]
 git token [<pat>]        git auth [owner/repo]
 git help                 git version
@@ -228,7 +228,8 @@ From another program: `local git = require "git"` — then call
 Flags: `--path=` prefix filter, `--ext=a,b` extension filter, `--prune` delete
 files removed upstream, `--max=` refuse a download larger than N bytes,
 `--force` re-download everything, `--all` push every local file, `--token=` use a
-token for one command, `--new` allow cloning a folder that does not exist yet.
+token for one command, `--new` allow cloning a folder that does not exist yet,
+`--no-delete` push your edits without removing files you deleted locally.
 
 ## Cloning and tracking individual directories
 
@@ -312,6 +313,24 @@ One clone per program is the normal shape: `cc_git`, `cc_swarm`, each with its o
    git push cc "first upload" --all     # also upload files never in the repo
    ```
 
+**Deleting a file in the clone deletes it in the repository.** A tracked file that is
+gone locally is removed on push. ComputerCraft cannot send `DELETE`, but GitHub's trees
+API deletes any path whose entry carries `sha: null` — still a `POST`, like everything
+else here:
+```
+git status cc
+  missing   data/notes.txt
+  1 missing file(s): push will remove them from the repository (use --no-delete to keep them)
+
+git push cc "drop old notes"
+  removing 1 file(s) from the repository
+    - data/notes.txt
+```
+Two guards: a file whose **folder is missing locally** is left alone (that looks like a
+partial clone rather than a deliberate delete), and `--no-delete` skips removals
+altogether. `status` names the pending removals before you push, and a file you deleted
+locally but that changed on GitHub counts as a clash in the pre-flight check.
+
 Push safety notes:
 - The token sits in **plaintext** inside your world save. Use a repo-scoped
   fine-grained token, not an account-wide one, and expire it.
@@ -384,10 +403,10 @@ git pull cc --force
   only 2 API calls each, so you are fine unless you push a lot.
 - **push cannot update a ref directly** (no PATCH/DELETE in 1.75): it merges a
   throwaway branch instead, and leaves that branch behind on GitHub.
-- **push cannot delete or rename a file** — the tree is built on top of the current
-  one, and ComputerCraft 1.75 has no `DELETE` or `PATCH`. Deleting or renaming needs a
-  real git client on a PC. That also means a file and a folder cannot be swapped for
-  each other in-game (git rejects the name collision).
+- **push can delete files** — a tree entry with `sha: null` (a `POST`), and a rename is
+  just a delete plus an add. What still needs a real git client on a PC is deleting or
+  renaming a **branch**, and swapping a file for a folder of the same name (git rejects
+  the collision).
 - **push never uploads `.git-token` or `.gitcfg`**, at any depth — so cloning into
   the computer's root directory (where the token lives) cannot publish your token
   to GitHub.

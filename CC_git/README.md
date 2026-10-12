@@ -266,6 +266,26 @@ Push safety notes:
 - If the repo protects `main`, the merge step fails and git.lua tells you which
   `cc-sync/<sha>` branch holds the commit — merge it on GitHub.
 
+### Push checks the branch first
+
+Before uploading a single byte, `push` compares the commit in `.gitcfg` with the current
+branch head. If they differ, it lists what changed upstream and whether it clashes with
+your edits:
+
+```
+main has moved on since you pulled (you are at 308f308, it is at c94b5ea)
+  you changed 2 file(s); 3 changed on GitHub since then
+  upstream: init.lua
+  upstream: lib/core.lua (deleted upstream)
+  BOTH changed - a pull would replace your copy: init.lua
+push refused: 1 file(s) changed on both sides. Save them, run 'git pull', re-apply,
+then push (or use --force)
+```
+
+Nothing was uploaded, so no `cc-sync` branch is left behind by a doomed push. If the two
+sides don't overlap you get `no overlap with your changes - 'git pull' is safe, and this
+push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
+
 ## What each command does
 
 - **clone** — resolves the branch head (`/git/ref/heads/<branch>`; falls back to

@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.2.1"
+git.VERSION = "1.3.0"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -1000,6 +1000,14 @@ end
 --   POST /merges      -> merge it into the target branch server-side
 --------------------------------------------------------------------------------
 
+-- print a labelled list, capped so a busy repository does not flood the screen
+function git.printList(label, items, limit)
+  if not items or #items == 0 then return end
+  limit = limit or 15
+  for i = 1, math.min(#items, limit) do print(label .. " " .. items[i]) end
+  if #items > limit then print("  ... and " .. (#items - limit) .. " more") end
+end
+
 function git.cmdPush(args)
   local dest = args[1]
   if dest and dest:sub(1, 2) == "--" then dest = nil end
@@ -1028,6 +1036,53 @@ function git.cmdPush(args)
   if #todo == 0 then print("nothing to push") return true end
   -- todo holds { localName, path, size }, so sort by the repository path
   table.sort(todo, function(a, b) return a.path < b.path end)
+
+  -- Has the branch moved since this clone last pulled? If so, say what would clash
+  -- BEFORE uploading anything: a doomed merge still leaves a cc-sync branch behind,
+  -- and a plain `git pull` would quietly replace their local copy with the remote one.
+  local head, herr = git.resolveCommit(cfg.owner, cfg.repo, cfg.branch)
+  if head == nil then
+    warn("could not check " .. cfg.branch .. " on GitHub: " .. tostring(herr))
+  elseif head ~= cfg.commit then
+    warn(cfg.branch .. " has moved on since you pulled (you are at " .. tostring(cfg.commit):sub(1, 8) ..
+         ", it is at " .. head:sub(1, 8) .. ")")
+    local treeData, terr = git.fetchTree(cfg.owner, cfg.repo, head)
+    if not treeData then
+      warn("  could not list the remote tree: " .. tostring(terr))
+    else
+      local remote = {}
+      for _, e in ipairs(treeData.tree) do if e.type == "blob" then remote[e.path] = e end end
+      local mine = {}
+      for _, item in ipairs(todo) do mine[item.path] = true end
+      local clash, upstream = {}, {}
+      for path, e in pairs(remote) do
+        local meta = cfg.files[path]
+        if not meta or meta.sha ~= e.sha then
+          upstream[#upstream + 1] = path
+          if mine[path] then clash[#clash + 1] = path end
+        end
+      end
+      for path in pairs(cfg.files) do
+        if not remote[path] then
+          upstream[#upstream + 1] = path .. " (deleted upstream)"
+          if mine[path] then clash[#clash + 1] = path .. " (deleted upstream)" end
+        end
+      end
+      table.sort(upstream); table.sort(clash)
+      print(string.format("  you changed %d file(s); %d changed on GitHub since then", #todo, #upstream))
+      git.printList("  upstream:", upstream)
+      if #clash > 0 then
+        git.printList("  BOTH changed - a pull would replace your copy:", clash)
+        if not opts.force then
+          return false, "push refused: " .. #clash .. " file(s) changed on both sides." ..
+                 " Save them, run 'git pull', re-apply, then push (or use --force)"
+        end
+        warn("  --force set, pushing anyway")
+      else
+        print("  no overlap with your changes - 'git pull' is safe, and this push will merge cleanly")
+      end
+    end
+  end
 
   print(string.format("uploading %d file(s)", #todo))
   local treeEntries = {}
@@ -1224,7 +1279,7 @@ function git.usage()
   print("git.lua " .. git.VERSION .. " for ComputerCraft 1.75 (GitHub only)")
   print("git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=N] [--new]")
   print("git pull  [dest] [--prune] [--force]")
-  print("git push  [dest] [message] [--all]")
+  print("git push  [dest] [message] [--all] [--force]")
   print("git status [dest]   git ls [dest]   git branch [dest]")
   print("git token [<pat>]      git auth [owner/repo]")
   print("a clone's --path/--ext filters are saved in .gitcfg: pull and push follow them,")

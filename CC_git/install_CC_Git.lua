@@ -394,10 +394,12 @@ local function main(args)
   end
 
   local counts, okAll = { new = 0, updated = 0, current = 0, kept = 0, failed = 0 }, true
+  local selfUpdated = false
   for _, item in ipairs(FILES) do
     local ok, note = one(item, preferNet)
     counts[note] = (counts[note] or 0) + 1
     if not ok then okAll = false end
+    if (item[2] or item[1]) == "install_CC_Git" and note == "updated" then selfUpdated = true end
   end
 
   local before = readText(STARTUP)
@@ -408,6 +410,12 @@ local function main(args)
   if counts.current > 0 and counts.new == 0 and counts.updated == 0 then
     print("already current. GitHub's raw file CDN can serve a copy up to five minutes old,")
     print("so if the version above is not what you expect, run this again in a few minutes.")
+  end
+  if selfUpdated then
+    -- the copy that ran was the old one, so it only knows about the files IT had.
+    -- a new release can add files and hook lines that only the new copy installs.
+    print("the installer just replaced itself - run install_CC_Git once more so the new")
+    print("copy can install anything it knows about that the old one did not.")
   end
   if not okAll then
     printError("installed with errors - check the messages above")

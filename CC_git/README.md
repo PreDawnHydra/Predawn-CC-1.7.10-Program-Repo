@@ -98,6 +98,11 @@ install_CC_Git status     # what is installed, which version, is the path entry 
 It ends with a summary line, e.g.
 `summary: 0 new, 1 updated, 1 already current, 0 kept, 0 failed`.
 
+**If the installer replaces itself, run it once more.** The copy that ran only knows
+about the files *it* shipped with, so a release that adds a new file (like
+`git_complete.lua`) is installed by the new copy, not the old one. It says so:
+`the installer just replaced itself - run install_CC_Git once more`.
+
 ### Tab completion
 `git <TAB>` completes the command words, `--<TAB>` completes the flags, and a path
 argument completes files and folders from the current directory (`/usr/gi<TAB>` works

@@ -91,9 +91,14 @@ end
 
 local function register()
   if not shell or not shell.setCompletionFunction then return false end
-  local keys = { "/usr/git" }
+  -- The shell looks the completer up by the RESOLVED program path, and fs.combine()
+  -- sanitises paths by splitting on "/" and dropping empty parts - so a resolved path
+  -- NEVER has a leading slash. resolveProgram("git") answers "usr/git", which is why
+  -- rom/startup registers "rom/programs/alias" and not "/rom/programs/alias".
+  -- Registering "/usr/git" here would simply never match, in total silence.
+  local keys = { "usr/git", "/usr/git" }
   local resolved = shell.resolveProgram and shell.resolveProgram("git")
-  if resolved and resolved ~= "/usr/git" then keys[#keys + 1] = resolved end
+  if resolved then keys[#keys + 1] = resolved end
   for i = 1, #keys do shell.setCompletionFunction(keys[i], completeGit) end
   return true
 end

@@ -39,6 +39,15 @@ local function readText(path)
   return s
 end
 
+-- fs readAll() drops a trailing newline, so a file written from a download (which
+-- fetch() puts back) never compares equal to one read from disk. Compare like-for-like
+-- or every run looks like a change and rewrites the same bytes.
+local function sameContent(a, b)
+  if a == b then return true end
+  if a == nil or b == nil then return false end
+  return a .. "\n" == b or a == b .. "\n"
+end
+
 local function writeText(path, text)
   local h = fs.open(path, "w")
   if not h then return false end
@@ -218,33 +227,44 @@ end
 
 -- install, refresh or leave alone. Returns ok, note where note is one of
 -- new / updated / current / kept / failed
+--
+-- The source rule, in words: if the program is already installed, the repository is
+-- the source of truth and we download. If it is NOT installed yet, a copy sitting
+-- next to this script is the offline cold start (floppy, or a folder you cloned).
+-- `update` skips local copies entirely and always downloads.
 local function one(item, preferNet)
   local name, target = item[1], item[2] or item[1]
   local dest = join(DIR, target)
   local existing = nil
   if fs.exists(dest) and not fs.isDir(dest) then existing = readText(dest) end
 
-  local text, source
-  if not preferNet then
+  local text, source, err
+  if not existing and not preferNet then
     local p = localCopy({ name, target })
-    if p then
-      text = readText(p)
-      source = p
-    end
+    if p then text, source = readText(p), p end
   end
+
   if not text then
     -- fetch returns the body only; keep the URL separate instead of assuming it
     -- hands back two values, or source ends up nil and the print below throws
-    local body, err = fetch(RAW .. name)
-    if not body then
-      if existing then
-        printError("  ! " .. target .. ": " .. tostring(err) .. " - keeping the installed copy")
-        return true, "kept"
-      end
-      printError("  ! " .. target .. ": " .. tostring(err))
-      return false, "failed"
+    local body
+    body, err = fetch(RAW .. name)
+    if body then
+      text, source = body, RAW .. name
+    elseif not existing then
+      -- cold start with no network: fall back to whatever is sitting next to us
+      local p = localCopy({ name, target })
+      if p then text, source = readText(p), p end
     end
-    text, source = body, RAW .. name
+  end
+
+  if not text then
+    if existing then
+      printError("  ! " .. target .. ": " .. tostring(err) .. " - keeping the installed copy")
+      return true, "kept"
+    end
+    printError("  ! " .. target .. ": " .. tostring(err))
+    return false, "failed"
   end
 
   if #text < 200 then
@@ -253,7 +273,7 @@ local function one(item, preferNet)
     return false, "failed"
   end
 
-  if existing == text then
+  if sameContent(existing, text) then
     print(string.format("  %-16s %6d bytes  %-8s  up to date, from %s",
       target, #text, verCol(text), tostring(source)))
     return true, "current"

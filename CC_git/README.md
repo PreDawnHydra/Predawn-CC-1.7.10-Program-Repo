@@ -121,6 +121,13 @@ that keeps changing cannot loop. If it cannot re-run itself, it says so
 (`! could not run the new copy - finishing with the old one`) and still installs
 everything, using the file list read out of the copy it just downloaded.
 
+**A stale copy that was launched removes itself.** A stray `install_CC_Git` in the
+computer root shadows `/usr` - the shell path starts with `.` - so the old copy keeps
+getting run and doing old things. When that happens, the new copy does the work and the
+old one is then deleted: `removed the old copy at /install_CC_Git`. Copies on a floppy
+are never deleted (that is someone's offline bootstrap), and nothing is deleted if the
+new copy never got to run.
+
 ### Tab completion
 `git <TAB>` completes the command words, `--<TAB>` completes the flags, and a path
 argument completes files and folders from the current directory (`/usr/gi<TAB>` works

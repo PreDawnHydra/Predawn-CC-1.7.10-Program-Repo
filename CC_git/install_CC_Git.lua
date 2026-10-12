@@ -254,6 +254,28 @@ local function removeStartup()
   return "removed the path entry from " .. STARTUP
 end
 
+-- If an OLD copy of this script is what got run, clear it out once the new copy has
+-- finished the job. A stray `install_CC_Git` in the computer root shadows /usr because
+-- the shell path starts with `.`, so the stale copy keeps getting launched and doing
+-- stale things. Never touch removable or read-only media: a floppy copy is someone's
+-- offline bootstrap, and /rom cannot be written to anyway.
+local function removeSelfCopy()
+  if not shell or not shell.getRunningProgram then return nil end
+  local selfPath = shell.getRunningProgram()
+  if not selfPath then return nil end
+  local name = fs.getName(selfPath)
+  if name ~= "install_CC_Git" and name ~= "install_CC_Git.lua" then return nil end
+  if fs.getDir(selfPath) == DIR then return nil end          -- the normal case
+  if selfPath:find("^/disk") or selfPath:find("^disk") then
+    return "left " .. selfPath .. " alone - it is on a floppy"
+  end
+  if fs.isReadOnly and fs.isReadOnly(selfPath) then
+    return "left " .. selfPath .. " alone - it is read only"
+  end
+  if pcall(fs.delete, selfPath) then return "removed the old copy at " .. selfPath end
+  return "could not remove " .. selfPath
+end
+
 -- install, refresh or leave alone. Silent: the caller decides what to print.
 -- Returns ok, note, version, oldVersion, err  (note: new / updated / current / kept / failed)
 --
@@ -458,7 +480,11 @@ local function main(args)
             if shell and shell.run then
               ok = pcall(shell.run, join(DIR, "install_CC_Git"), "--reran")
             end
-            if ok then return true end
+            if ok then
+              local note = removeSelfCopy()
+              if note then print(note) end
+              return true
+            end
             printError("! could not run the new copy - finishing with the old one")
           end
         end

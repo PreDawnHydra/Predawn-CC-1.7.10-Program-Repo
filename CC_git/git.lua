@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.3.0"
+git.VERSION = "1.4.0"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -1281,12 +1281,19 @@ function git.usage()
   print("git pull  [dest] [--prune] [--force]")
   print("git push  [dest] [message] [--all] [--force]")
   print("git status [dest]   git ls [dest]   git branch [dest]")
+  print("tab completion: install_CC_Git runs git_complete at boot; `git` also registers it")
   print("git token [<pat>]      git auth [owner/repo]")
   print("a clone's --path/--ext filters are saved in .gitcfg: pull and push follow them,")
   print("so one program folder at a time needs no full clone.")
   print("with --path, the folder named by the path IS the clone (no repo folders inside it);")
   print("add --keep-path for desktop git's layout, where the repository root is kept.")
 end
+
+-- the command words, in one place: git usage, and git_complete.lua, both need them
+git.COMMANDS = {
+  "auth", "branch", "clone", "fetch", "help", "ls",
+  "pull", "push", "status", "token", "version", "whoami",
+}
 
 function git.run(args)
   if not args or #args == 0 then git.usage() return true end
@@ -1315,8 +1322,33 @@ end
 -- Loading it as a library: `local git = require "git"` (require passes the
 -- module name as varargs, which we detect and ignore) or set
 -- _G.__GIT_LIB = true before dofile("git.lua").
+-- Tab completion lives in git_complete.lua next to this file. The shell needs the
+-- completer registered BEFORE you type the command, which is why the installer's
+-- /startup hook runs that file at boot. Running it here too means completion works
+-- for the rest of the session on computers that own their own startup file.
+function git.registerCompletion()
+  if not shell or not shell.setCompletionFunction then return false end
+  local here = nil
+  if shell.getRunningProgram then
+    local self = shell.getRunningProgram()
+    if self then here = fs.getDir(self) end
+  end
+  local candidates = {}
+  if here then candidates[#candidates + 1] = (here == "" and "git_complete" or here .. "/git_complete") end
+  candidates[#candidates + 1] = "/usr/git_complete"
+  for i = 1, #candidates do
+    local p = candidates[i]
+    if fs.exists(p) and not fs.isDir(p) then
+      pcall(shell.run, p)
+      return true
+    end
+  end
+  return false
+end
+
 local cliArgs = { ... }
 if not _G.__GIT_LIB and not (#cliArgs == 1 and cliArgs[1] == "git") then
+  git.registerCompletion()
   git.run(cliArgs)
 end
 

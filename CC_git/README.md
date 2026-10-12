@@ -12,10 +12,11 @@ API facts this was built against.
 ## Files
 | path | what |
 |---|---|
-| `git.lua` | the program (~42 KB, fits the 1 MB computer HDD) |
+| `git.lua` | the program (~49 KB, fits the 1 MB computer HDD) |
 | `install_CC_Git.lua` | installer/updater: puts `git` in `/usr` and on the shell path |
+| `git_complete.lua` | tab completion for `git` (commands, flags, local paths) |
 | `../CC-1.75-QUIRKS.md` | version quirks reference for you and other agents |
-| `tests/` | offline test suite (205 assertions) — runs outside Minecraft |
+| `tests/` | offline test suite (308 assertions) — runs outside Minecraft |
 
 ## Install
 
@@ -96,6 +97,23 @@ install_CC_Git status     # what is installed, which version, is the path entry 
 
 It ends with a summary line, e.g.
 `summary: 0 new, 1 updated, 1 already current, 0 kept, 0 failed`.
+
+### Tab completion
+`git <TAB>` completes the command words, `--<TAB>` completes the flags, and a path
+argument completes files and folders from the current directory (`/usr/gi<TAB>` works
+from anywhere). The completer is a separate small file, `git_complete.lua`, installed
+next to `git`:
+
+- the boot hook runs it, so completion is live on the **first** command after a reboot —
+  the shell needs the completer registered before you type the command;
+- `git` also registers it when it runs, so on a computer whose startup file belongs to
+  another program (swarm_server) completion arrives with the first `git` command;
+- up/down arrows stay ComputerCraft's own command history — a program cannot take them
+  over at the prompt.
+
+Note: `fs.complete()` is documented in `rom/help/fs` and used by ComputerCraft's own
+`rom/startup`, but this jar never registers it, so the built-in file completion is
+broken here. `git_complete.lua` lists and matches by hand instead.
 
 **No floppy?** Any way of getting the text of `install_CC_Git.lua` onto the
 computer works — `pastebin get`, a second computer over rednet, or straight into

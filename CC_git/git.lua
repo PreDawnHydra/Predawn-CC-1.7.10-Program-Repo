@@ -19,7 +19,8 @@ Flags:
   --path=PREFIX   only touch files under this path in the repo (remembered in
                   .gitcfg, so pull and push keep following it)
   --ext=a,b       only touch files with these extensions
-  --prune         delete local files that were removed upstream
+  --prune         pull: also delete files removed upstream that you edited here
+                  (unchanged ones are always deleted)
   --max=BYTES     abort a clone/pull that would download more than BYTES
   --token=TOKEN   use this GitHub token for this command only
   --force         pull: re-download everything
@@ -38,7 +39,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.5.1"
+git.VERSION = "1.5.2"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -903,7 +904,7 @@ function git.cmdPull(args)
   for _, path in ipairs(sortedKeys(cfg.files)) do
     if not remote[path] then removed[#removed + 1] = path end
   end
-  local deletedLocally = 0
+  local deletedLocally, keptChanged = 0, 0
   for _, path in ipairs(removed) do
     local localPath = pjoin(dest, git.repoToLocal(cfg.filter, path))
     if not exists(localPath) then
@@ -913,20 +914,25 @@ function git.cmdPull(args)
       cfg.files[path] = nil
       goneLocally = goneLocally + 1
       printf("  gone  %s (already deleted on this computer)", path)
-    elseif opts.prune then
-      -- fs.delete raises on a missing path, hence the pcall
+    elseif fs.isDir(localPath) or (not opts.prune and git.isDirty(localPath, cfg.files[path])) then
+      -- like desktop git: a copy edited here is never thrown away by a plain pull.
+      -- It stays tracked, so a push would put it back - that is the user's call.
+      -- A directory in its place is never deleted, not even with --prune.
+      keptChanged = keptChanged + 1
+      warn("  ! " .. path .. " was removed upstream but you changed it here - kept" ..
+           " (a push would add it back; delete it or pull --prune if you do not need it)")
+    else
+      -- unchanged since the last pull, so nothing is lost: delete it, as desktop
+      -- git does. fs.delete raises on failure, hence the pcall.
       local okDel, err = pcall(fs.delete, localPath)
       if not okDel then
+        keptChanged = keptChanged + 1
         warn("  ! could not delete " .. localPath .. ": " .. tostring(err))
       else
         cfg.files[path] = nil
         deletedLocally = deletedLocally + 1
         printf("  del   %s", path)
       end
-    else
-      -- still on disk: keep the file AND keep tracking it, so a later push does not
-      -- turn it back into a brand new upload
-      printf("  gone  %s (still on your computer - use --prune to delete it)", path)
     end
   end
 
@@ -952,10 +958,9 @@ function git.cmdPull(args)
   cfg.updated = os.time and os.time() or 0
   git.saveCfg(dest, cfg)
 
-  print(string.format("pulled %s: %d updated, %d added, %d removed from the repository" ..
-        " (%d deleted here, %d still on your computer), %d bytes, %d failed",
-        sha:sub(1, 8), updated, added, #removed, deletedLocally,
-        #removed - deletedLocally - goneLocally, bytes, failed))
+  print(string.format("pulled %s: %d updated, %d added, %d removed (%d deleted here, %d kept" ..
+        " because you changed them), %d bytes, %d failed",
+        sha:sub(1, 8), updated, added, #removed, deletedLocally, keptChanged, bytes, failed))
   return failed == 0
 end
 

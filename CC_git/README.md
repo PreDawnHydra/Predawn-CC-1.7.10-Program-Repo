@@ -217,7 +217,7 @@ Examples:
 git clone Equbuxu/mine master mine --ext=lua      # only .lua files
 git clone you/cc-scripts main scripts --path=lib  # only lib/
 cd scripts && git pull                            # update in place
-git pull scripts --prune                          # also delete upstream removals
+git pull scripts --prune                          # also delete removals you edited
 git token ghp_xxxxxxxxxxxxxxxx                    # store a token (write scope)
 git push scripts "fix drill routine"              # upload local edits
 ```
@@ -225,8 +225,8 @@ git push scripts "fix drill routine"              # upload local edits
 From another program: `local git = require "git"` — then call
 `git.cmdPull({"scripts"})`, `git.rawGet(...)`, `git.json.decode(...)`, etc.
 
-Flags: `--path=` prefix filter, `--ext=a,b` extension filter, `--prune` delete
-files removed upstream, `--max=` refuse a download larger than N bytes,
+Flags: `--path=` prefix filter, `--ext=a,b` extension filter, `--prune` also delete
+files removed upstream that you edited locally, `--max=` refuse a download larger than N bytes,
 `--force` re-download everything, `--all` push every local file, `--token=` use a
 token for one command, `--new` allow cloning a folder that does not exist yet,
 `--no-delete` push your edits without removing files you deleted locally.
@@ -368,9 +368,11 @@ push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
   file from `raw.githubusercontent.com` pinned to that commit sha. Writes a
   `.gitcfg` manifest (owner, repo, branch, commit, tree, per-file sha + size).
 - **pull** — re-resolves the branch head, diffs blob shas against `.gitcfg`,
-  re-downloads only changed/new files, reports upstream removals (deletes them
-  only with `--prune`; a removed file that is already gone from the computer is
-  reported as gone and simply stops being tracked). `--prune` deliberately skips the "already up to date"
+  re-downloads only changed/new files, and deletes files removed upstream, as
+  desktop git does. A removed file you **edited** on the computer is kept, with
+  a warning, and stays tracked, so a later push would add it back; `--prune`
+  deletes it anyway. A removed file that is already gone from the computer is
+  reported as gone and stops being tracked. `--prune` deliberately skips the "already up to date"
   shortcut, so it can clear leftovers even when your commit already matches the
   branch head.
 - **status** — compares each tracked file's size *and* content fingerprint with the

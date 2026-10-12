@@ -38,7 +38,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.5.0"
+git.VERSION = "1.5.1"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -442,13 +442,21 @@ function git.httpPost(url, payload)
   local res = http.post(url, body, headers(extra))
   if not res then res = retryOtherAuthStyle("post", url, body, extra) end
   if not res then
-    return false, "POST failed (network, blocked host, bad/expired token, missing Contents:write permission, or HTTP 4xx/5xx): " .. url
+    -- no response object at all: the request never got an answer
+    return false, "no response from GitHub for " .. url ..
+      " - network down, host not allowed, or the request was too large"
   end
   local code = res.getResponseCode and res.getResponseCode() or 0
   local text = res.readAll() or ""
   res.close()
   if code and code >= 400 then
-    return false, "HTTP " .. code .. " for " .. url
+    -- GitHub's JSON body says why; without it a failure is guesswork
+    local why = ""
+    local data = json.decode(text)
+    if type(data) == "table" and type(data.message) == "string" then
+      why = " - GitHub: " .. data.message:sub(1, 200)
+    end
+    return false, "HTTP " .. code .. " for " .. url .. why
   end
   return true, text
 end
@@ -891,23 +899,34 @@ function git.cmdPull(args)
 
   -- removals first: a tracked file that became a directory upstream would
   -- otherwise block the download of everything under it
-  local removed = {}
+  local removed, goneLocally = {}, 0
   for _, path in ipairs(sortedKeys(cfg.files)) do
     if not remote[path] then removed[#removed + 1] = path end
   end
+  local deletedLocally = 0
   for _, path in ipairs(removed) do
-    if opts.prune then
-      -- the manifest can name a repository path with no local counterpart (a filter
-      -- that was repaired, for instance), and fs.delete raises on a missing path
-      local localPath = pjoin(dest, git.repoToLocal(cfg.filter, path))
-      if exists(localPath) then
-        local okDel, err = pcall(fs.delete, localPath)
-        if not okDel then warn("  ! could not delete " .. localPath .. ": " .. tostring(err)) end
-      end
+    local localPath = pjoin(dest, git.repoToLocal(cfg.filter, path))
+    if not exists(localPath) then
+      -- it is not on the computer at all - usually because the user deleted it and
+      -- pushed that removal. Saying "kept" here is nonsense, and leaving the entry in
+      -- the manifest makes a later push try to delete a path that is already gone.
       cfg.files[path] = nil
-      printf("  del   %s", path)
+      goneLocally = goneLocally + 1
+      printf("  gone  %s (already deleted on this computer)", path)
+    elseif opts.prune then
+      -- fs.delete raises on a missing path, hence the pcall
+      local okDel, err = pcall(fs.delete, localPath)
+      if not okDel then
+        warn("  ! could not delete " .. localPath .. ": " .. tostring(err))
+      else
+        cfg.files[path] = nil
+        deletedLocally = deletedLocally + 1
+        printf("  del   %s", path)
+      end
     else
-      printf("  gone  %s (kept; use --prune to delete)", path)
+      -- still on disk: keep the file AND keep tracking it, so a later push does not
+      -- turn it back into a brand new upload
+      printf("  gone  %s (still on your computer - use --prune to delete it)", path)
     end
   end
 
@@ -933,9 +952,10 @@ function git.cmdPull(args)
   cfg.updated = os.time and os.time() or 0
   git.saveCfg(dest, cfg)
 
-  print(string.format("pulled %s: %d updated, %d added, %d removed%s, %d bytes, %d failed",
-        sha:sub(1, 8), updated, added, #removed, opts.prune and " (deleted)" or " (kept)",
-        bytes, failed))
+  print(string.format("pulled %s: %d updated, %d added, %d removed from the repository" ..
+        " (%d deleted here, %d still on your computer), %d bytes, %d failed",
+        sha:sub(1, 8), updated, added, #removed, deletedLocally,
+        #removed - deletedLocally - goneLocally, bytes, failed))
   return failed == 0
 end
 
@@ -1078,6 +1098,7 @@ function git.cmdPush(args)
   -- Has the branch moved since this clone last pulled? If so, say what would clash
   -- BEFORE uploading anything: a doomed merge still leaves a cc-sync branch behind,
   -- and a plain `git pull` would quietly replace their local copy with the remote one.
+  local remoteTree
   local head, herr = git.resolveCommit(cfg.owner, cfg.repo, cfg.branch)
   if head == nil then
     warn("could not check " .. cfg.branch .. " on GitHub: " .. tostring(herr))
@@ -1088,6 +1109,7 @@ function git.cmdPush(args)
     if not treeData then
       warn("  could not list the remote tree: " .. tostring(terr))
     else
+      remoteTree = treeData
       local remote = {}
       for _, e in ipairs(treeData.tree) do if e.type == "blob" then remote[e.path] = e end end
       local mine = {}
@@ -1156,19 +1178,29 @@ function git.cmdPush(args)
       end
     end
   end
-  -- GitHub rejects a tree entry that deletes a path missing from the base tree, so
-  -- anything already gone upstream is dropped from the request.
-  if head and head ~= cfg.commit then
-    local baseTree = git.fetchTree(cfg.owner, cfg.repo, head)
+  -- GitHub fails the WHOLE tree request if an entry deletes a path that is not in the
+  -- base tree, so check the base tree before sending anything. The manifest can name a
+  -- path that is already gone upstream - a pull that kept the file on disk leaves the
+  -- entry behind on purpose - so this must run even when the branch has not moved.
+  local forgotten = 0
+  if #removes > 0 then
+    local baseTree = remoteTree or git.fetchTree(cfg.owner, cfg.repo, head or cfg.commit)
     if baseTree then
       local present = {}
       for _, e in ipairs(baseTree.tree) do if e.type == "blob" then present[e.path] = true end end
       local stillThere = {}
       for _, d in ipairs(removes) do
         if present[d.path] then stillThere[#stillThere + 1] = d
-        else warn("  ! " .. d.path .. " is already gone on " .. cfg.branch) end
+        else
+          -- gone on both sides: stop tracking it, or every later push warns again
+          warn("  ! " .. d.path .. " is already gone on " .. cfg.branch)
+          cfg.files[d.path] = nil
+          forgotten = forgotten + 1
+        end
       end
       removes = stillThere
+    else
+      warn("  could not list the repository to check the removals - pushing anyway")
     end
   end
   for _, d in ipairs(removes) do
@@ -1176,7 +1208,15 @@ function git.cmdPush(args)
     treeEntries[#treeEntries + 1] = { path = d.path, mode = "100644", type = "blob",
                                       sha = git.json.NULL }
   end
-  if #treeEntries == 0 then return false, "no files uploaded" end
+  if #treeEntries == 0 then
+    -- every removal turned out to be already done and no file needed uploading
+    if #todo == 0 then
+      if forgotten > 0 then git.saveCfg(dest, cfg) end
+      print("nothing to push")
+      return true
+    end
+    return false, "no files uploaded"
+  end
 
   local tree, terr = git.apiPost("/repos/" .. cfg.owner .. "/" .. cfg.repo .. "/git/trees",
                                  { base_tree = cfg.tree, tree = treeEntries })

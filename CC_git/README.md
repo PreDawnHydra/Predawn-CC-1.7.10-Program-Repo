@@ -369,7 +369,8 @@ push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
   `.gitcfg` manifest (owner, repo, branch, commit, tree, per-file sha + size).
 - **pull** — re-resolves the branch head, diffs blob shas against `.gitcfg`,
   re-downloads only changed/new files, reports upstream removals (deletes them
-  only with `--prune`). `--prune` deliberately skips the "already up to date"
+  only with `--prune`; a removed file that is already gone from the computer is
+  reported as gone and simply stops being tracked). `--prune` deliberately skips the "already up to date"
   shortcut, so it can clear leftovers even when your commit already matches the
   branch head.
 - **status** — compares each tracked file's size *and* content fingerprint with the

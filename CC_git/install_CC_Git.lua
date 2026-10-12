@@ -29,6 +29,9 @@ local FILES   = { { "git.lua", "git" }, { "install_CC_Git.lua", "install_CC_Git"
 local DIR     = "/usr"
 local STARTUP = "/startup"
 local MARKER  = "-- git.lua path entry (added by install_CC_Git.lua)"
+-- bump when the installer itself changes; the version is read back out of a freshly
+-- fetched copy with installerVersion() below
+local VERSION = "1.3.0"
 
 --------------------------------------------------------------------------------
 
@@ -113,6 +116,12 @@ end
 local function versionOf(text)
   if not text then return nil end
   return text:match('git%.VERSION%s*=%s*"([^"]+)"')
+end
+
+-- the installer keeps its own version in `local VERSION = "..."`
+local function installerVersion(text)
+  if not text then return nil end
+  return text:match([[local VERSION%s*=%s*"([^"]+)"]])
 end
 
 -- the updater has no version of its own, so print "-" rather than a misleading "v?"
@@ -203,22 +212,30 @@ local function hookPresent(text) return text:find(hookCode(), 1, true) ~= nil en
 -- every regeneration. Ours (marked) does not - the generator would drop it again.
 local function foreignHook(text) return hookPresent(text) and not text:find(MARKER, 1, true) end
 
+-- returns message, changed. A no-op says nothing to the user, so `changed` is what
+-- decides whether install() prints it and whether a reboot is needed.
 local function ensureStartup()
   local cur = readText(STARTUP)
   if cur == nil then
-    if not writeText(STARTUP, startupLine() .. "\n") then return "FAILED writing " .. STARTUP end
-    return "created " .. STARTUP .. " with the path entry"
+    if not writeText(STARTUP, startupLine() .. "\n") then
+      printError("! FAILED writing " .. STARTUP)
+      return "", false
+    end
+    return "set up " .. STARTUP .. " to put git on the path", true
   end
   if hookPresent(cur) and not cur:find(MARKER, 1, true) then
-    return "your " .. STARTUP .. " already sets the path - left alone"
+    return "your " .. STARTUP .. " already sets the path - left alone", false
   end
   local want = startupLine() .. "\n" .. stripHook(cur)
   if want:gsub("%s+$", "") == cur:gsub("%s+$", "") then
-    return "path entry already at the top of " .. STARTUP
+    return "path entry already at the top of " .. STARTUP, false
   end
-  if not writeText(STARTUP, want) then return "FAILED writing " .. STARTUP end
-  if cur:find(MARKER, 1, true) then return "moved the path entry to the top of " .. STARTUP end
-  return "added the path entry to the top of " .. STARTUP
+  if not writeText(STARTUP, want) then
+    printError("! FAILED writing " .. STARTUP)
+    return "", false
+  end
+  if cur:find(MARKER, 1, true) then return "moved the path entry to the top of " .. STARTUP, true end
+  return "added the path entry to the top of " .. STARTUP, true
 end
 
 -- drop only the lines we added; everything else in their startup stays put
@@ -237,8 +254,8 @@ local function removeStartup()
   return "removed the path entry from " .. STARTUP
 end
 
--- install, refresh or leave alone. Returns ok, note where note is one of
--- new / updated / current / kept / failed
+-- install, refresh or leave alone. Silent: the caller decides what to print.
+-- Returns ok, note, version, oldVersion, err  (note: new / updated / current / kept / failed)
 --
 -- The source rule, in words: if the program is already installed, the repository is
 -- the source of truth and we download. If it is NOT installed yet, a copy sitting
@@ -249,6 +266,7 @@ local function one(item, preferNet)
   local dest = join(DIR, target)
   local existing = nil
   if fs.exists(dest) and not fs.isDir(dest) then existing = readText(dest) end
+  local oldVer = versionOf(existing)
 
   local text, source, err
   if not existing and not preferNet then
@@ -257,8 +275,6 @@ local function one(item, preferNet)
   end
 
   if not text then
-    -- fetch returns the body only; keep the URL separate instead of assuming it
-    -- hands back two values, or source ends up nil and the print below throws
     local body
     body, err = fetch(RAW .. name)
     if body then
@@ -271,33 +287,41 @@ local function one(item, preferNet)
   end
 
   if not text then
-    if existing then
-      printError("  ! " .. target .. ": " .. tostring(err) .. " - keeping the installed copy")
-      return true, "kept"
-    end
-    printError("  ! " .. target .. ": " .. tostring(err))
-    return false, "failed"
+    if existing then return true, "kept", oldVer, oldVer, err end
+    return false, "failed", nil, oldVer, err
   end
 
   if #text < 200 then
-    printError("  ! " .. target .. ": only " .. #text .. " bytes - that does not look like the program")
-    if existing then return true, "kept" end
-    return false, "failed"
+    err = "only " .. #text .. " bytes - that does not look like the program"
+    if existing then return true, "kept", oldVer, oldVer, err end
+    return false, "failed", nil, oldVer, err
   end
 
-  if sameContent(existing, text) then
-    print(string.format("  %-16s %6d bytes  %-8s  up to date, from %s",
-      target, #text, verCol(text), tostring(source)))
-    return true, "current"
-  end
+  if sameContent(existing, text) then return true, "current", versionOf(text), oldVer end
 
   if not writeText(dest, text) then
-    printError("  ! " .. target .. ": cannot write " .. dest .. " (disk full?)")
-    return false, "failed"
+    return false, "failed", nil, oldVer, "cannot write " .. dest .. " (disk full?)"
   end
-  print(string.format("  %-16s %6d bytes  %-8s  %s from %s", target, #text, verCol(text),
-    existing and "updated" or "new", tostring(source)))
-  return true, existing and "updated" or "new"
+  return true, existing and "updated" or "new", versionOf(text), oldVer
+end
+
+-- The copy running here only knows the files IT shipped with. Rather than telling the
+-- user to run the installer twice, read the file list out of the copy we just pulled.
+local function fileListOf(text)
+  -- the closing brace has to be the one that ends the statement (followed by a
+  -- newline), otherwise the first inner `}` of `{ "git.lua", "git" }` stops the match
+  local block = text and text:match("local FILES%s*=%s*{([%s%S]-)}%s*\n")
+  if not block then return nil end
+  local list = {}
+  for a, b in block:gmatch('"([^"]+)"%s*,%s*"([^"]+)"') do list[#list + 1] = { a, b } end
+  if #list == 0 then return nil end
+  return list
+end
+
+local function verPair(oldV, newV)
+  local a, b = oldV or "?", newV or "?"
+  if a == b then return b end
+  return a .. " -> " .. b
 end
 
 local function status()
@@ -384,48 +408,93 @@ local function main(args)
     return false
   end
 
-  -- no arguments: install what is missing, refresh what is already there.
-  -- "update" skips any copy sitting next to the script and goes to GitHub.
+  -- Both forms do the same thing: pull ourselves first, then install or refresh every
+  -- program. `update` differs only in ignoring a copy sitting next to the script.
   local preferNet = (action == "update")
-  print((preferNet and "updating " .. DIR .. " from GitHub" or "installing or updating " .. DIR))
   if not ensureDir(DIR) then
     printError("cannot create " .. DIR)
     return false
   end
 
-  local counts, okAll = { new = 0, updated = 0, current = 0, kept = 0, failed = 0 }, true
-  local selfUpdated = false
-  for _, item in ipairs(FILES) do
-    local ok, note = one(item, preferNet)
-    counts[note] = (counts[note] or 0) + 1
-    if not ok then okAll = false end
-    if (item[2] or item[1]) == "install_CC_Git" and note == "updated" then selfUpdated = true end
+  -- 1. ourselves. Doing this first means one run is enough even when the new release
+  --    added files this copy has never heard of.
+  local installedSelf = readText(join(DIR, "install_CC_Git"))
+  local selfText = nil
+  if installedSelf == nil and not preferNet then
+    -- cold start: a copy beside the script is enough to bootstrap from
+    local p = localCopy({ "install_CC_Git.lua", "install_CC_Git" })
+    if p then selfText = readText(p) end
+  end
+  if not selfText then selfText = fetch(RAW .. "install_CC_Git.lua") end
+  if not selfText and installedSelf == nil then
+    local p = localCopy({ "install_CC_Git.lua", "install_CC_Git" })
+    if p then selfText = readText(p) end
   end
 
-  local before = readText(STARTUP)
-  print(ensureStartup())
-  if startupIsRegenerated(before) and not foreignHook(before) then regenerationWarning() end
-  print(string.format("summary: %d new, %d updated, %d already current, %d kept, %d failed",
-    counts.new, counts.updated, counts.current, counts.kept, counts.failed))
-  if counts.current > 0 and counts.new == 0 and counts.updated == 0 then
-    print("already current. GitHub's raw file CDN can serve a copy up to five minutes old,")
-    print("so if the version above is not what you expect, run this again in a few minutes.")
-  end
-  if selfUpdated then
-    -- the copy that ran was the old one, so it only knows about the files IT had.
-    -- a new release can add files and hook lines that only the new copy installs.
-    print("the installer just replaced itself - run install_CC_Git once more so the new")
-    print("copy can install anything it knows about that the old one did not.")
-  end
-  if not okAll then
-    printError("installed with errors - check the messages above")
+  local list = FILES
+  local failed = false
+  if selfText and #selfText >= 200 then
+    list = fileListOf(selfText) or FILES
+    if not sameContent(installedSelf, selfText) then
+      if writeText(join(DIR, "install_CC_Git"), selfText) then
+        if installedSelf == nil then
+          print("install_CC_Git " .. (installerVersion(selfText) or "?") .. " installed")
+        else
+          print(string.format("install_CC_Git %s",
+            verPair(installerVersion(installedSelf), installerVersion(selfText))))
+        end
+      else
+        printError("! install_CC_Git: cannot write " .. DIR .. " (disk full?)")
+        failed = true
+      end
+    end
+  elseif installedSelf == nil then
+    printError("! install_CC_Git: cannot reach GitHub and there is no local copy to install from")
     return false
   end
 
-  print("")
-  print("done. type `reboot` once to pick up the new path, then from any folder:")
-  print("  git help")
-  print("  git clone you/repo          (clones into ./repo)")
+  -- 2. the programs
+  local changed, gitVer = 0, nil
+  for _, item in ipairs(list) do
+    local target = item[2] or item[1]
+    if target ~= "install_CC_Git" then
+      local ok, note, ver, oldVer, err = one(item, preferNet)
+      if note == "new" then
+        print(string.format("%s %s installed", target, ver or ""))
+        changed = changed + 1
+      elseif note == "updated" then
+        print(string.format("%s %s", target, verPair(oldVer, ver)))
+        changed = changed + 1
+      elseif note == "kept" then
+        printError(string.format("! %s: %s - keeping %s", target, tostring(err), ver or "the installed copy"))
+        failed = true
+      elseif note == "failed" then
+        printError(string.format("! %s: %s", target, tostring(err)))
+        failed = true
+      end
+      if target == "git" then gitVer = ver or gitVer end
+    end
+  end
+
+  -- 3. the boot hook, but only say something when it actually changed
+  local before = readText(STARTUP)
+  local startupNote, startupChanged = ensureStartup()
+  if startupChanged then
+    print(startupNote)
+    changed = changed + 1
+  end
+  if startupIsRegenerated(before) and not foreignHook(before) then regenerationWarning() end
+
+  if changed > 0 then
+    print("reboot to put git on the path, then from any folder: git help")
+  elseif gitVer and not failed then
+    print("git " .. gitVer .. " - up to date")
+  end
+
+  if failed then
+    printError("done with errors - `install_CC_Git status` has the detail")
+    return false
+  end
   return true
 end
 

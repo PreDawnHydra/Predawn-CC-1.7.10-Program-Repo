@@ -95,13 +95,28 @@ install_CC_Git update     # ignore local copies, re-download from GitHub
 install_CC_Git status     # what is installed, which version, is the path entry set
 ```
 
-It ends with a summary line, e.g.
-`summary: 0 new, 1 updated, 1 already current, 0 kept, 0 failed`.
+What it prints is deliberately short. A first install:
+```
+install_CC_Git 1.3.0 installed
+git 1.4.0 installed
+git_complete installed
+set up /startup to put git on the path
+reboot to put git on the path, then from any folder: git help
+```
+An update says what moved to what, and only that:
+```
+install_CC_Git 1.2.0 -> 1.3.0
+git 1.3.0 -> 1.4.0
+reboot to put git on the path, then from any folder: git help
+```
+Nothing to do is one line: `git 1.4.0 - up to date`. Problems are still printed in
+full - a download that failed, a disk that is full - because a quiet failure is worse
+than a noisy one. `install_CC_Git status` is where the detail lives.
 
-**If the installer replaces itself, run it once more.** The copy that ran only knows
-about the files *it* shipped with, so a release that adds a new file (like
-`git_complete.lua`) is installed by the new copy, not the old one. It says so:
-`the installer just replaced itself - run install_CC_Git once more`.
+**It pulls itself first, so one run is enough.** The copy that runs only knows the
+files it shipped with, so the installer re-pulls itself, reads the file list out of the
+new copy, and installs from that - a release that adds a new file lands in the same
+run, no need to run it twice.
 
 ### Tab completion
 `git <TAB>` completes the command words, `--<TAB>` completes the flags, and a path

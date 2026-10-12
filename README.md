@@ -1,5 +1,7 @@
 # Predawn-CC-1.7.10-Program-Repo
-A collection of scripts for Computer Craft 1.7.10 mostly for my own personal use but take a look around!
+
+Scripts for ComputerCraft 1.75 on Minecraft 1.7.10, published so they can be pulled
+and updated from inside the game.
 
 ## Layout
 
@@ -19,5 +21,19 @@ git status cc
 git push cc "what changed"
 ```
 
-`git.lua` is also a library (`local git = require("git")`), and `bootstrap.lua` is
-a one-file in-game downloader for grabbing a single script from this repo.
+`git.lua` is also a library (`local git = require("git")`). `install_CC_Git.lua`
+installs and updates it, and `git_complete.lua` provides tab completion.
+
+### StartHere
+
+A single pasted line that becomes a downloader, for a computer that has nothing on it
+yet.
+
+```
+StartHere  ->  install_CC_Git  ->  /usr/git
+```
+
+### MineSwarm
+
+A server-plus-agents system (work in progress): a controller computer plus agent
+computers, with a terminal UI. See `MineSwarm/README.md`.

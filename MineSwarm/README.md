@@ -23,7 +23,7 @@ so `swarm/theme.lua` would create a global called `theme.lua` and leave `theme` 
 /swarm/               the modules that program loads
 ```
 
-## Run it from wherever you cloned it
+## Running from any directory
 
 Nothing about the program's own location is hard-coded. It asks the shell which file it
 is running (`shell.getRunningProgram()`), takes the folder from that

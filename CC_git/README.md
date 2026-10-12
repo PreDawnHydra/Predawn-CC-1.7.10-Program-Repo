@@ -6,38 +6,46 @@ local edits back.
 
 It is **not** a git client: ComputerCraft 1.75 has no sockets and no websockets, so
 the git wire protocol is impossible. It drives the GitHub REST API instead, which
-covers the same workflow for GitHub-hosted repos. See `CC-1.75-QUIRKS.md` for the
-API facts this was built against.
+covers the same workflow for GitHub-hosted repos. The version-specific API facts it
+depends on are listed under **Limitations** below.
 
 ## Files
 | path | what |
 |---|---|
-| `git.lua` | the program (~49 KB, fits the 1 MB computer HDD) |
+| `git.lua` | the program (~50 KB, fits the default 1 MB computer disk) |
 | `install_CC_Git.lua` | installer/updater: puts `git` in `/usr` and on the shell path |
 | `git_complete.lua` | tab completion for `git` (commands, flags, local paths) |
 | `../CC-1.75-QUIRKS.md` | version quirks reference for you and other agents |
-| `tests/` | offline test suite (308 assertions) — runs outside Minecraft |
+| `tests/` | offline test suite (323 assertions) — runs outside Minecraft |
 
 ## Install
 
-**From a floppy (simplest).** Put `git.lua` and `install_CC_Git.lua` on the floppy,
-then on the computer:
+**From a floppy (simplest).** Put `git.lua`, `install_CC_Git.lua` and
+`git_complete.lua` on the floppy, then on the computer:
 
 ```
 /disk/install_CC_Git
 reboot
 ```
 
-### Why `/usr` and a `/startup` line?
+### Install location and the boot hook
 
 `/rom` is read-only in 1.75 (it is a `JarMount` straight out of the jar), so there is no
 way to install `git` the way `list` and `copy` ship. The default shell path is
 `.:/rom/programs:...` and every entry in it except `.` is read-only, which leaves two
 options: a folder you add yourself, or the current directory.
 
-So the installer puts the programs in `/usr` and adds a **two-line hook at the top of
+So the installer puts the programs in `/usr` and writes a **hook at the top of
 `/startup`** — the only boot hook ComputerCraft 1.75 has. Top, not bottom: an existing
 `/startup` may error out or block forever, and anything appended after it never runs.
+The hook is three lines:
+
+```lua
+-- git.lua path entry (added by install_CC_Git.lua)
+if not shell.path():find("/usr", 1, true) then shell.setPath(shell.path() .. ":/usr") end
+if fs.exists("/usr/git_complete") then shell.run("/usr/git_complete") end
+```
+
 The marker comment and the code are on **separate lines**; a `--` marker in front of the
 code comments the code out, and the hook silently does nothing.
 
@@ -79,20 +87,19 @@ On the floppy, keep the programs **extension-less** as well (`git`, `install_CC_
 `StartHere`) — the shell matches names exactly, so `/disk/install_CC_Git` is what you
 type, and that is also how the ROM ships its own programs.
 
-That copies `git.lua` to **`/usr/git`** (no extension — ComputerCraft's shell
-matches program names exactly and never appends `.lua`) and installs the updater as
-`/usr/install_CC_Git`. It appends a path entry to `/startup`, which ComputerCraft
-runs at boot; after that `git` works from any directory. The installer prefers a
-copy sitting next to it and falls back to GitHub.
+It installs `git.lua` as **`/usr/git`** (no extension — ComputerCraft's shell matches
+program names exactly and never appends `.lua`), the updater as `/usr/install_CC_Git`,
+and the completer as `/usr/git_complete`, then writes the boot hook. After a reboot
+`git` works from any directory.
 
-**Running it again is safe.** With no arguments it installs anything that is
-missing and refreshes anything that is already there; files that already match are
+**Running it again is safe, and it is the way to update.** With no arguments it
+re-pulls itself, then installs or refreshes every program; files that already match are
 left alone, and a failed download never removes a working copy.
 
 ```
-install_CC_Git            # install what is missing, refresh what is present
-install_CC_Git update     # ignore local copies, re-download from GitHub
-install_CC_Git status     # what is installed, which version, is the path entry set
+install_CC_Git            # update everything (self-update first, then the programs)
+install_CC_Git update     # same, but never use a copy sitting next to the script
+install_CC_Git status     # what is installed, which version, where the hook is
 ```
 
 What it prints is deliberately short. A first install:
@@ -125,7 +132,7 @@ everything, using the file list read out of the copy it just downloaded.
 computer root shadows `/usr` - the shell path starts with `.` - so the old copy keeps
 getting run and doing old things. When that happens, the new copy does the work and the
 old one is then deleted: `removed the old copy at /install_CC_Git`. Copies on a floppy
-are never deleted (that is someone's offline bootstrap), and nothing is deleted if the
+are never deleted - they are someone's offline installer - and nothing is deleted if the
 new copy never got to run.
 
 ### Tab completion
@@ -145,20 +152,17 @@ Note: `fs.complete()` is documented in `rom/help/fs` and used by ComputerCraft's
 `rom/startup`, but this jar never registers it, so the built-in file completion is
 broken here. `git_complete.lua` lists and matches by hand instead.
 
-**No floppy?** Any way of getting the text of `install_CC_Git.lua` onto the
-computer works — `pastebin get`, a second computer over rednet, or straight into
-the save data with the game closed. Once it is there, it fetches `git.lua` itself:
+**No floppy?** Any way of getting the text of `install_CC_Git.lua` onto the computer
+works — `pastebin get`, a second computer over rednet, or writing the file into the
+computer's own storage with the game closed. Once it is there, it downloads `git.lua`
+and the completer itself.
 
-```bash
-cp cc-dev/CC_git/install_CC_Git.lua ".../saves/LUA_Testing/computer/8/install_CC_Git.lua"
-```
+## First install on an empty computer
 
-## Start from nothing
+If the computer has nothing on it yet, one pasted line gets you a downloader: see
+`../StartHere/README.md` for the line and the steps.
 
-If the computer has nothing on it yet, paste one line to get a downloader: see
-`../StartHere/README.md` for the line and the cold-start steps.
-
-## Where it works from
+## Working directory
 
 `git` follows your current directory the way git on a desktop does:
 
@@ -173,7 +177,7 @@ git status                                               # acts on this clone
 With no destination, `clone` uses the repository name. `pull`, `push`, `status`,
 `ls` and `branch` all default to the clone in the current directory.
 
-### `git: not found` — check these in order
+### Troubleshooting: git not found
 
 ```
 install_CC_Git status     # says exactly where the path entry is
@@ -183,7 +187,7 @@ install_CC_Git status     # says exactly where the path entry is
    a program can never fix the path of the shell that launched it. One `reboot`.
 2. **Another program rewrites `/startup`.** `install_CC_Git status` says
    `this /startup regenerates itself, so another program owns it` and prints the line to
-   add there instead. See *Why `/usr` and a `/startup` line?* above. Older installers appended their block to the *bottom* of
+   add there instead. See *Install location and the boot hook* above. Older installers appended their block to the *bottom* of
    `/startup`, where a startup script that errors out or loops forever never reaches
    it. Current `install_CC_Git` detects that and moves it to line 1 — status says
    `path entry is line 1, where it belongs` when it is right, and tells you to run the
@@ -201,9 +205,10 @@ And with no hook at all, both of these always work: `/usr/git status`, or
 ```
 git clone <owner>/<repo> [branch] [dest] [--path=PFX] [--ext=lua,md] [--max=BYTES] [--new]
 git pull  [dest] [--prune] [--force]
-git push  [dest] [message] [--all]
+git push  [dest] [message] [--all] [--force]
 git status [dest]        git ls [dest]        git branch [dest]
-git token [<pat>]        git help
+git token [<pat>]        git auth [owner/repo]
+git help                 git version
 ```
 
 Examples:
@@ -225,7 +230,7 @@ files removed upstream, `--max=` refuse a download larger than N bytes,
 `--force` re-download everything, `--all` push every local file, `--token=` use a
 token for one command, `--new` allow cloning a folder that does not exist yet.
 
-## One program at a time
+## Cloning and tracking individual directories
 
 **A `--path` clone is flat by default.** `--path=MineSwarm/Swarm_Server/` creates a
 folder called `Swarm_Server` and puts the files straight inside it — the folder you asked
@@ -316,7 +321,7 @@ Push safety notes:
 - If the repo protects `main`, the merge step fails and git.lua tells you which
   `cc-sync/<sha>` branch holds the commit — merge it on GitHub.
 
-### Push checks the branch first
+### Push pre-flight check
 
 Before uploading a single byte, `push` compares the commit in `.gitcfg` with the current
 branch head. If they differ, it lists what changed upstream and whether it clashes with
@@ -336,7 +341,7 @@ Nothing was uploaded, so no `cc-sync` branch is left behind by a doomed push. If
 sides don't overlap you get `no overlap with your changes - 'git pull' is safe, and this
 push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
 
-## What each command does
+## Commands
 
 - **clone** — resolves the branch head (`/git/ref/heads/<branch>`; falls back to
   the repo's default branch if your branch does not exist), reads the recursive
@@ -364,10 +369,10 @@ Update the program, then refresh the manifest:
 git pull cc --force
 ```
 
-## Limits you should know
+## Limitations
 
-- **1 MB total disk** per computer (`computerSpaceLimit=1000000` in
-  `ComputerCraft.cfg`). clone/pull pre-check the size and refuse.
+- **Disk is capped per computer** — ComputerCraft's `computerSpaceLimit` defaults to
+  1 MB. `clone` and `pull` pre-check the download size and refuse rather than fill it.
 - **HTTP is text-only** in 1.75: responses are decoded to a Java String, so binary
   files (images, jars) come out corrupted. Lua/text files are fine.
 - `readAll()` drops the trailing newline and turns CRLF into LF. clone/pull
@@ -380,9 +385,9 @@ git pull cc --force
 - **push cannot update a ref directly** (no PATCH/DELETE in 1.75): it merges a
   throwaway branch instead, and leaves that branch behind on GitHub.
 - **push cannot delete or rename a file** — the tree is built on top of the current
-  one. Deleting anything needs a PC: `cc-dev/publish.sh "message"` pushes from a
-  real git clone. That also means a file and a folder cannot be swapped for each
-  other from in-game (git rejects the name collision).
+  one, and ComputerCraft 1.75 has no `DELETE` or `PATCH`. Deleting or renaming needs a
+  real git client on a PC. That also means a file and a folder cannot be swapped for
+  each other in-game (git rejects the name collision).
 - **push never uploads `.git-token` or `.gitcfg`**, at any depth — so cloning into
   the computer's root directory (where the token lives) cannot publish your token
   to GitHub.
@@ -393,9 +398,9 @@ git pull cc --force
 ## Tests
 
 ```bash
-cd cc-dev/CC_git/tests
-npm i fengari          # if /tmp/node_modules/fengari is missing
-node run.js            # -> 205 passed, 0 failed
+cd tests               # in the CC_git folder of this repo
+npm i fengari          # the Lua interpreter the suite runs on
+node run.js            # -> 323 passed, 0 failed
 ```
 
 The suite emulates the CC 1.75 API (including `readAll()` newline behaviour and

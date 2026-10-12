@@ -1,8 +1,8 @@
 # StartHere
 
-The smallest possible way to get software onto a ComputerCraft 1.75 computer when
-you have nothing on it yet — no floppy, no clone, no installer. One pasted line
-becomes a downloader, and the downloader fetches everything else from GitHub.
+A one-line downloader for a ComputerCraft 1.75 computer that has nothing on it yet —
+no floppy, no clone, no installer. The pasted line becomes a downloader, and the
+downloader fetches everything else from GitHub.
 
 ```
 StartHere  ->  install_CC_Git  ->  /usr/git  ->  git pull / git push
@@ -23,25 +23,26 @@ syntax error in the file. So the whole program has to live inside 512 characters
 and the test suite in `../CC_git/tests` refuses to run if this line ever exceeds
 that, grows a second line or a comment, or stops matching the copy in this README.
 
-## Cold start, from nothing
+## First install
 
 ```
 edit StartHere            # paste the line, Ctrl+S, Ctrl+Q
 StartHere                 # downloads install_CC_Git (saved without .lua)
-install_CC_Git            # installs /usr/git and the path entry
+install_CC_Git            # installs git, the updater and the completer into /usr
 reboot                    # picks up the new shell path
 git help
 ```
 
-`install_CC_Git` installs anything missing and refreshes anything already present,
-so running it again is always safe. It adds one line to the **top** of `/startup` — if
-you already have a startup script of your own, yours still runs, and
-`install_CC_Git unhook` takes the line back out. Afterwards it is installed in `/usr` too, so
-updates need no pasting and no floppy:
+`install_CC_Git` installs anything missing and refreshes anything already present, so
+running it again is how you update. It writes its hook at the **top** of `/startup` — a
+marker comment, the shell path line, and the tab-completion line. If you already have a
+startup script of your own, yours still runs underneath, and `install_CC_Git unhook`
+takes the hook back out. Everything then lives in `/usr`, so later updates need no
+pasting and no floppy:
 
 ```
-install_CC_Git update     # re-download git and the updater from GitHub
-install_CC_Git status     # what is installed, which version, is the path entry set
+install_CC_Git            # update everything; it re-pulls itself first
+install_CC_Git status     # what is installed, which version, where the hook is
 ```
 
 ## Using it
@@ -82,11 +83,12 @@ anything under 200 bytes rather than installing it.
 
 - Text only. ComputerCraft 1.75's HTTP layer returns a Java string, so binary files
   arrive corrupted — StartHere cannot fetch images, zips, or anything non-text.
-- The URL must be reachable under the server's `http_whitelist`.
+- The URL must be reachable under the server's `http_whitelist` setting.
 - It follows no redirects; use the direct `raw.githubusercontent.com` URL.
 - It overwrites an existing destination without asking.
-- Floppies are no longer kept in sync with this repo. If one still holds an old
-  `install_CC_Git`, prefer `StartHere` — the repo is the source of truth.
+- If a floppy holds an old copy of the installer, prefer this one: the repository is
+  the source of truth, and a stale copy in the computer's own folders will be run in
+  preference to `/usr` because the shell path starts with `.`.
 - If the line ever needs to grow past 512 characters, paste it in two goes: paste
   the first half, press End, then paste the rest. Each paste is capped at 512, not
   the file.

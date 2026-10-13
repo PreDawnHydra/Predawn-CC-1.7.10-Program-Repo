@@ -39,7 +39,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.5.2"
+git.VERSION = "1.5.3"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -443,15 +443,18 @@ function git.httpPost(url, payload)
   local res = http.post(url, body, headers(extra))
   if not res then res = retryOtherAuthStyle("post", url, body, extra) end
   if not res then
-    -- no response object at all: the request never got an answer
-    return false, "no response from GitHub for " .. url ..
-      " - network down, host not allowed, or the request was too large"
+    -- CC 1.75 returns nil for EVERY 4xx/5xx as well as for network failures (see
+    -- CC-1.75-QUIRKS.md), so this is usually GitHub refusing the request
+    return false, "POST failed: " .. url .. " - GitHub refused it (HTTP 4xx/5xx: bad or" ..
+      " expired token, missing Contents:write permission, or an invalid request)," ..
+      " or the network/host is blocked; ComputerCraft 1.75 cannot tell which"
   end
   local code = res.getResponseCode and res.getResponseCode() or 0
   local text = res.readAll() or ""
   res.close()
   if code and code >= 400 then
-    -- GitHub's JSON body says why; without it a failure is guesswork
+    -- only reachable on ComputerCraft builds newer than 1.75, which return a handle
+    -- for a 4xx/5xx; there, GitHub's JSON body says why
     local why = ""
     local data = json.decode(text)
     if type(data) == "table" and type(data.message) == "string" then

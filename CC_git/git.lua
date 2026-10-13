@@ -39,7 +39,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.5.4"
+git.VERSION = "1.5.5"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -1100,7 +1100,16 @@ function git.cmdPush(args)
     else removes[#removes + 1] = d end
   end
 
-  if #todo == 0 and #removes == 0 then print("nothing to push") return true end
+  if #todo == 0 and #removes == 0 then
+    print("nothing to push")
+    -- the usual reason to try a push with no edits is a change made on GitHub, so say
+    -- whether there is something to pull instead
+    local head = git.resolveCommit(cfg.owner, cfg.repo, cfg.branch)
+    if head and head ~= cfg.commit then
+      print(cfg.branch .. " has changed on GitHub since you pulled - run 'git pull' to get it")
+    end
+    return true
+  end
   -- todo holds { localName, path, size }, so sort by the repository path
   table.sort(todo, function(a, b) return a.path < b.path end)
 
@@ -1274,15 +1283,29 @@ function git.cmdPush(args)
     return false, "server-side merge failed: " .. tostring(merr)
   end
 
-  cfg.commit = merge.sha
-  if merge.commit and merge.commit.tree and merge.commit.tree.sha then
-    cfg.tree = merge.commit.tree.sha
+  -- The merge commit also carries whatever changed upstream since the last pull,
+  -- which this computer has NOT downloaded. Recording the merge as "where this clone
+  -- is" would make the next pull say "already up to date" and never fetch it. So
+  -- unless the branch was exactly where we left it, record our own commit instead.
+  local upToDate = head ~= nil and head == cfg.commit
+  if upToDate then
+    cfg.commit = merge.sha
+    if merge.commit and merge.commit.tree and merge.commit.tree.sha then
+      cfg.tree = merge.commit.tree.sha
+    end
+  else
+    cfg.commit, cfg.tree = commit.sha, tree.sha
   end
   cfg.updated = os.time and os.time() or 0
   git.saveCfg(dest, cfg)
 
   print("pushed: " .. commit.sha:sub(1, 8) .. " merged into " .. cfg.branch ..
         " as " .. merge.sha:sub(1, 8))
+  if head == nil then
+    print("could not check " .. cfg.branch .. " before pushing - run 'git pull' to be sure you are current")
+  elseif not upToDate then
+    print(cfg.branch .. " also has changes you have not pulled - run 'git pull' to get them")
+  end
   return true
 end
 

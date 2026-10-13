@@ -39,7 +39,7 @@ Version notes (verified against ComputerCraft1.75.jar):
 
 local git = {}
 
-git.VERSION = "1.5.3"
+git.VERSION = "1.5.4"
 git.API = "https://api.github.com"
 git.RAW = "https://raw.githubusercontent.com"
 git.USER_AGENT = "ComputerCraft-git.lua/" .. git.VERSION
@@ -1035,8 +1035,9 @@ end
 --   POST /git/blobs   -> object shas
 --   POST /git/trees   -> new tree (based on the tree we cloned)
 --   POST /git/commits -> commit whose parent is our known commit
---   POST /git/refs    -> throwaway branch holding that commit
---   POST /merges      -> merge it into the target branch server-side
+--   POST /merges      -> merge that commit into the target branch server-side;
+--                        `head` takes a commit sha, so no branch is needed (and
+--                        CC could never delete one, so none is left behind)
 --------------------------------------------------------------------------------
 
 -- print a labelled list, capped so a busy repository does not flood the screen
@@ -1104,7 +1105,7 @@ function git.cmdPush(args)
   table.sort(todo, function(a, b) return a.path < b.path end)
 
   -- Has the branch moved since this clone last pulled? If so, say what would clash
-  -- BEFORE uploading anything: a doomed merge still leaves a cc-sync branch behind,
+  -- BEFORE uploading anything: a doomed merge still leaves an orphan commit behind,
   -- and a plain `git pull` would quietly replace their local copy with the remote one.
   local remoteTree
   local head, herr = git.resolveCommit(cfg.owner, cfg.repo, cfg.branch)
@@ -1118,17 +1119,22 @@ function git.cmdPush(args)
       warn("  could not list the remote tree: " .. tostring(terr))
     else
       remoteTree = treeData
+      -- only what this clone tracks: a --path clone must not report (or clash on)
+      -- files in folders it never downloaded
+      local inClone = git.makeFilter(cfg.filter or {})
       local remote = {}
-      for _, e in ipairs(treeData.tree) do if e.type == "blob" then remote[e.path] = e end end
+      for _, e in ipairs(treeData.tree) do
+        if e.type == "blob" and inClone(e.path) then remote[e.path] = e end
+      end
       local mine = {}
-      for _, item in ipairs(todo) do mine[item.path] = true end
-      for _, d in ipairs(deletions) do if not d.skip then mine[d.path] = true end end
+      for _, item in ipairs(todo) do mine[item.path] = "" end
+      for _, d in ipairs(deletions) do if not d.skip then mine[d.path] = " (you deleted it)" end end
       local clash, upstream = {}, {}
       for path, e in pairs(remote) do
         local meta = cfg.files[path]
         if not meta or meta.sha ~= e.sha then
           upstream[#upstream + 1] = path
-          if mine[path] then clash[#clash + 1] = path .. " (you deleted it)" end
+          if mine[path] then clash[#clash + 1] = path .. mine[path] end
         end
       end
       for path in pairs(cfg.files) do
@@ -1239,24 +1245,32 @@ function git.cmdPush(args)
 
   for _, d in ipairs(removes) do cfg.files[d.path] = nil end
 
-  local stamp = tostring(commit.sha):sub(1, 8)
-  local tmpBranch = "cc-sync/" .. stamp
-  local ref, rerr = git.apiPost("/repos/" .. cfg.owner .. "/" .. cfg.repo .. "/git/refs", {
-    ref = "refs/heads/" .. tmpBranch,
-    sha = commit.sha,
-  })
-  if not ref then
-    return false, "create branch " .. tmpBranch .. " failed: " .. tostring(rerr) ..
-           " (commit " .. commit.sha .. " exists; you can cherry-pick it on GitHub)"
-  end
-
   local merge, merr = git.apiPost("/repos/" .. cfg.owner .. "/" .. cfg.repo .. "/merges", {
     base = cfg.branch,
     head = commit.sha,
-    commit_message = "Merge " .. tmpBranch .. " (ComputerCraft push)",
+    commit_message = "Merge " .. tostring(commit.sha):sub(1, 8) .. " (ComputerCraft push)",
   })
   if not merge or not merge.sha then
-    warn("merged on GitHub manually: branch " .. tmpBranch .. " holds commit " .. commit.sha)
+    -- refused: a conflict, or a protected branch that only takes pull requests (CC
+    -- 1.75 cannot tell which). Only now park the commit on a branch, so the work
+    -- is not stranded and a pull request can be opened from it.
+    local stamp = tostring(commit.sha):sub(1, 8)
+    local tmpBranch = "cc-sync/" .. stamp
+    local ref = git.apiPost("/repos/" .. cfg.owner .. "/" .. cfg.repo .. "/git/refs", {
+      ref = "refs/heads/" .. tmpBranch,
+      sha = commit.sha,
+    })
+    if ref then
+      warn("  " .. cfg.branch .. " refused the merge - your commit is safe on branch " .. tmpBranch)
+      warn("  if " .. cfg.branch .. " is protected, open a pull request:")
+      warn("    https://github.com/" .. cfg.owner .. "/" .. cfg.repo .. "/compare/" ..
+           cfg.branch .. "..." .. tmpBranch)
+      warn("  if it is a conflict: git pull, re-apply your edits, push again")
+      -- GitHub just accepted a POST with this token, so it is not a token problem
+      return false, "merge into " .. cfg.branch .. " refused (protected branch or conflict)"
+    end
+    warn("  commit " .. commit.sha .. " was made but is not on any branch" ..
+         " (the merge and the fallback branch were both refused)")
     return false, "server-side merge failed: " .. tostring(merr)
   end
 
@@ -1269,7 +1283,6 @@ function git.cmdPush(args)
 
   print("pushed: " .. commit.sha:sub(1, 8) .. " merged into " .. cfg.branch ..
         " as " .. merge.sha:sub(1, 8))
-  print("note: branch " .. tmpBranch .. " was left behind (CC cannot delete refs)")
   return true
 end
 

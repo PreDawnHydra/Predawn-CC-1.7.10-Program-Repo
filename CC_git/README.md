@@ -296,7 +296,7 @@ One clone per program is the normal shape: `cc_git`, `cc_swarm`, each with its o
    - Repository access: *Only select repositories* → your repo
    - Permissions → Repository permissions → **Contents: Read and write**
      (that single permission covers `git/blobs`, `git/trees`, `git/commits`,
-     `git/refs` and `merges` — confirmed against GitHub's permissions docs)
+     and `merges` — confirmed against GitHub's permissions docs)
    - Pick an expiry you're comfortable with. A classic token with the `repo`
      scope also works.
 2. **Store it in-game**, from the computer's home directory:
@@ -337,8 +337,9 @@ Push safety notes:
 - Change detection is size + a 31-bit content checksum, so same-length edits are
   caught. Files are uploaded exactly as `readAll()` hands them over, so a pushed
   file loses its final newline.
-- If the repo protects `main`, the merge step fails and git.lua tells you which
-  `cc-sync/<sha>` branch holds the commit — merge it on GitHub.
+- If the merge is refused (a conflict, or a protected `main` that only takes pull
+  requests), git.lua parks the commit on a `cc-sync/<sha>` branch and prints the
+  link to open a pull request from it. That is the only time a branch is created.
 
 ### Push pre-flight check
 
@@ -356,7 +357,7 @@ push refused: 1 file(s) changed on both sides. Save them, run 'git pull', re-app
 then push (or use --force)
 ```
 
-Nothing was uploaded, so no `cc-sync` branch is left behind by a doomed push. If the two
+Nothing was uploaded, so a doomed push leaves nothing behind on GitHub. If the two
 sides don't overlap you get `no overlap with your changes - 'git pull' is safe, and this
 push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
 
@@ -379,8 +380,9 @@ push will merge cleanly` and the push goes ahead. `--force` sends it regardless.
   manifest: `modified`, `new`, `missing`, or `clean`.
 - **push** — needs a token with write access. Uploads changed/new files as blobs
   (base64), builds a tree on top of the cloned tree, makes a commit parented on
-  your known commit, creates a throwaway branch `cc-sync/<sha>`, then asks GitHub
-  to merge it into your branch server-side (`POST /merges`). All of that is POST,
+  your known commit, then asks GitHub to merge that commit into your branch
+  server-side (`POST /merges` with the commit sha as `head`, so no branch is
+  created). Older versions left a `cc-sync/<sha>` branch behind on every push. All of that is POST,
   which is what CC 1.75 can send.
 
 If `git status` lists files as modified that you never touched, your `.gitcfg` was

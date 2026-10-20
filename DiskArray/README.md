@@ -1,7 +1,9 @@
 # DiskArray
 
-**Status: design skeleton — no code yet.** This folder holds the design and the
-planned layout. The first runnable slice is listed under Roadmap.
+**Status: slice 1 runs.** The server program shows a clickable pool of the Disk
+Drives on its computer — totals plus a capacity bar per drive — on the computer
+screen or on a monitor. There is no manifest, no striping/mirroring and no
+rednet yet; the rest of this file is the design those steps will implement.
 
 Several **Disk Drives** on one computer, presented as a single volume ("the array"),
 and served over **rednet** so other computers can read and write floppies without
@@ -62,6 +64,40 @@ array by name instead of hard-coding a computer ID.
 file has to be chunked; start at ~1 KB of text per message and confirm in game
 before tuning it up.
 
+## Running it in game (slice 1)
+
+**Hardware.** One computer with 1-4 Disk Drives attached to any sides. A monitor
+is optional. No modem is needed until the rednet slice exists. Floppies: any
+CC-formatted floppy mounts; a raw floppy mounts read-only.
+
+**Get the files.** From a computer that already has `git`:
+
+```
+git pull cc
+cd cc/DiskArray/Server
+diskarray_server.lua
+```
+
+The `.lua` is required — `shell.resolveProgram` never appends it. The program
+finds its own folder from `shell.getRunningProgram()`, so it works from a clone,
+from the computer root, or from a floppy (`/disk/diskarray_server.lua`) as long
+as the `diskarray/` folder sits next to it.
+
+**Options.**
+
+```
+diskarray_server.lua --monitor left    -- draw on the monitor on that side
+diskarray_server.lua --refresh 1       -- redraw interval (s)
+diskarray_server.lua --rescan 10       -- drive re-scan interval (s)
+```
+
+A monitor is clickable too: 1.75 fires `monitor_touch (side, x, y)` when a
+player clicks one, and the UI maps that to a left click.
+
+**Stopping it.** Ctrl+T. Auto-start is deliberately not installed by this slice —
+it would write `/startup`, a computer-wide change, for a program that so far
+only reads.
+
 ## Design
 
 **Membership.** Each member floppy carries a manifest at `/disk*/.diskarray`
@@ -95,18 +131,23 @@ array refuses `put` in `stripe` mode until it is whole. Because floppies are
 removable, the server re-reads membership on `disk` and `disk_eject` events rather
 than trusting a cached list.
 
-## Planned layout
+## Layout
 
 ```
 DiskArray/
   README.md              this file
   Server/
-    diskarray_server.lua the program that owns the drives
-    diskarray/           modules: core, raid, net, app, screens, theme, widget, widgets
+    diskarray_server.lua the program that owns the drives        (slice 1: works)
+    diskarray/           modules: theme, widget, widgets, app, pool, screens
   Client/
-    diskarray_client.lua the rednet client + terminal UI
+    diskarray_client.lua the rednet client + terminal UI         (not written yet)
     diskarray/           modules: client, app, screens, theme, widget, widgets
+  tests/                 offline suite (run.js + stubs.lua + tests.lua)
 ```
+
+`theme`, `widget`, `widgets` and `app` are the MineSwarm UI framework, copied so
+a clone of one role folder is self-contained; `app` in this copy adds
+`monitor_touch`/`monitor_resize` handling and an `onEvent` catch-all.
 
 Modules stay **extension-less** and are loaded with `os.loadAPI("/diskarray/core")`
 style paths — `os.loadAPI` names the global from `fs.getName()`, so
@@ -125,10 +166,23 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
 
 ## Roadmap
 
-1. **First slice (next commit):** `diskarray_server` discovery + `status` — find the
-   drives, print mount paths, labels, disk IDs, free space, and the array layout.
-   No writes yet.
-2. Manifest read/write, `rescan`, degraded detection.
+1. **Done (slice 1):** `Server/diskarray_server.lua` — drive discovery, pool
+   totals, a capacity bar per drive, clickable Overview and Drives screens,
+   Rescan and two-step Eject, monitor support. Offline suite in `tests/`.
+2. Manifest read/write (`/disk*/.diskarray`), degraded detection, `label`.
 3. `put` / `get` / `ls` over rednet with chunking and checksums, `mirror` mode only.
 4. `Client/` program with the terminal UI.
 5. `stripe` and `span` modes.
+
+## Tests
+
+Offline, under fengari, with CC 1.75 API stubs (including the strict
+`string.format` and the `os.loadAPI` environment semantics from `bios.lua`).
+Run it capped and timed, like every other suite here:
+
+```
+cd cc-dev/DiskArray/tests && timeout 120 node --max-old-space-size=1024 run.js 2>&1 | tail -25
+```
+
+It also refuses to run if any source uses Lua 5.2+/5.3-only syntax, `fs.complete`,
+`os.getenv`, or a `monitor_click` string — none of which exist in this jar.

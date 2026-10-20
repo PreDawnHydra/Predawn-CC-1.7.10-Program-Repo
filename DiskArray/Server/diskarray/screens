@@ -1,0 +1,273 @@
+-- ===========================================================================
+--  screens.lua   ->  global `screens`      (DISKARRAY SERVER)
+-- ---------------------------------------------------------------------------
+--  Two clickable screens over the pool:
+--    Overview — pool totals plus a capacity bar per drive
+--    Drives   — pick a drive, see its detail, rescan or eject it
+--
+--  Everything is drawn from live pool records, and every control is a widget,
+--  so mouse_click on the computer terminal and monitor_touch on a monitor both
+--  hit the same handlers.
+-- ===========================================================================
+
+local selectedSide = nil
+local pendingEject = nil   -- { side = ..., at = os.clock() } — two-step confirm
+local CONFIRM_WINDOW = 5   -- seconds the confirm stays armed
+
+---------------------------------------------------------------------------
+-- Selection survives a rescan: the side name is the key, and a drive can
+-- disappear between scans.
+---------------------------------------------------------------------------
+local function selectedDrive()
+    if selectedSide then return pool.get(selectedSide) end
+    return nil
+end
+
+local function keepSelection()
+    if selectedSide and not pool.get(selectedSide) then selectedSide = nil end
+end
+
+---------------------------------------------------------------------------
+-- Shared actions
+---------------------------------------------------------------------------
+local function doRescan(app)
+    pool.scan()
+    keepSelection()
+    app.notify("rescanned: " .. pool.lastScanNote(), "dim")
+end
+
+local function doEject(app)
+    local d = selectedDrive()
+    if not d then app.notify("select a drive to eject first", "warn") return end
+    if not d.hasDisk then app.notify(d.side .. " has no disk in it", "warn") return end
+    local armed = pendingEject and pendingEject.side == d.side
+              and (os.clock() - pendingEject.at) < CONFIRM_WINDOW
+    if not armed then
+        pendingEject = { side = d.side, at = os.clock() }
+        app.notify("click Eject again within " .. CONFIRM_WINDOW .. "s to eject " .. d.side, "warn")
+        return
+    end
+    pendingEject = nil
+    local ok, msg = pool.eject(d.side)
+    keepSelection()
+    app.notify(msg, ok and "ok" or "error")
+end
+
+local function registerActions(app)
+    app.registerAction("rescan", { label = "Rescan", style = "primary",
+                                   run = function() doRescan(app) end })
+    app.registerAction("eject",  { label = "Eject", style = "danger",
+                                   run = function() doEject(app) end })
+end
+
+---------------------------------------------------------------------------
+-- Button row helper (same shape MineSwarm uses: equal chips, one gap apart)
+---------------------------------------------------------------------------
+local function buttonRow(app, root, y, defs)
+    local b = app.body()
+    local n = #defs
+    if n == 0 then return end
+    local gap = 1
+    local bw = math.floor((b.w - (n - 1) * gap) / n)
+    bw = math.max(math.min(bw, 20), 6)
+    local x = b.x
+    for i = 1, n do
+        local d = defs[i]
+        root:add(widgets.button({
+            x = x, y = y, w = bw, h = 1,
+            label = d.label, action = d.run, style = d.style or "normal",
+        }))
+        x = x + bw + gap
+    end
+end
+
+local function actionDefs(app, ids)
+    local defs = {}
+    for i = 1, #ids do
+        local act = app.actions[ids[i]]
+        if act then
+            table.insert(defs, { label = act.label, style = act.style,
+                                 run = function() app.runAction(ids[i]) end })
+        end
+    end
+    return defs
+end
+
+---------------------------------------------------------------------------
+-- Overview
+---------------------------------------------------------------------------
+local function buildOverview(app, root)
+    local b = app.body()
+    local s = pool.summary()
+
+    local rows = {
+        { "drives",    tostring(s.drives), function() return s.drives > 0 and "text" or "warn" end },
+        { "disks in",  tostring(s.disks),  "text" },
+        { "mounted",   tostring(s.data),   "text" },
+        { "writable",  tostring(s.writable),
+          function() return s.writable > 0 and "ok" or "warn" end },
+        { "free total", pool.bytes(s.totalFree), "ok" },
+        { "smallest free", function()
+              return s.minFree == nil and "?" .. " (" .. s.unknownFree .. " unreadable)"
+                                        or pool.bytes(s.minFree)
+          end, function() return (s.minFree or 0) > 0 and "text" or "error" end },
+        { "files",     tostring(s.files), "dim" },
+        { "used (files)", pool.bytes(s.used), "dim" },
+        { "layout",    pool.mode(), "dim" },
+        { "last scan", math.floor(pool.age()) .. "s ago: " .. pool.lastScanNote(), "dim" },
+    }
+
+    local cols = (b.w >= 46) and 2 or 1
+    local colW = math.floor((b.w - 2 - (cols - 1)) / cols)
+    local padW = 0
+    for i = 1, #rows do padW = math.max(padW, #(rows[i][1] .. ":")) end
+    padW = padW + 1
+
+    -- The bars matter more than the tail of the stat list, so drop rows from
+    -- the bottom until the capacity panel and the buttons fit.
+    local function rowsHeight(n) return math.ceil(n / cols) + 2 end
+    local buttonY = b.y + b.h - 1
+    local barsH = math.min(math.max(#pool.drives(), 0) * 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
+    while #rows > 4 and rowsHeight(#rows) + barsH + 2 > b.h do
+        table.remove(rows)
+        barsH = math.min(math.max(#pool.drives(), 0) * 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
+    end
+
+    local infoH = rowsHeight(#rows)
+    root:add(widgets.panel({ x = b.x, y = b.y, w = b.w, h = infoH, title = "DISK POOL" }))
+    for i, r in ipairs(rows) do
+        local c = ((i - 1) % cols) + 1
+        local rr = math.floor((i - 1) / cols)
+        local value = r[2]
+        root:add(widgets.label({
+            x = b.x + 2 + (c - 1) * (colW + 1), y = b.y + 1 + rr, w = colW - 1,
+            value = function()
+                local v = value
+                if type(v) == "function" then v = v() end
+                return widget.pad(r[1] .. ":", padW) .. tostring(v)
+            end,
+            role = r[3],
+        }))
+    end
+
+    -- One bar per drive: filled = used / (used + free). 1.75 has no total size,
+    -- so the bar is an estimate built from a bounded walk; a truncated walk is
+    -- labelled "~" instead of pretending to be exact.
+    local barsY = b.y + infoH + 1
+    local drives = pool.drives()
+    if #drives > 0 and barsH >= 2 then
+        root:add(widgets.panel({ x = b.x, y = barsY, w = b.w, h = barsH, title = "CAPACITY" }))
+        local shown = math.min(#drives, math.floor((barsH - 2) / 2))
+        for i = 1, shown do
+            local d = drives[i]
+            local y = barsY + 1 + (i - 1) * 2
+            local free, used = d.free, d.used or 0
+            local max = (type(free) == "number") and (free + used) or 1
+            root:add(widgets.progress({
+                x = b.x + 2, y = y, w = b.w - 4, h = 1,
+                value = function()
+                    local cur = pool.get(d.side)
+                    if not cur or type(cur.free) ~= "number" then return 0 end
+                    return (cur.used or 0)
+                end,
+                max = function()
+                    local cur = pool.get(d.side)
+                    if not cur or type(cur.free) ~= "number" then return 1 end
+                    return (cur.used or 0) + cur.free
+                end,
+                caption = function()
+                    local cur = pool.get(d.side)
+                    if not cur then return d.side .. " (gone)" end
+                    local mark = cur.truncated and "~" or ""
+                    local state = cur.mount and (cur.readOnly and "read-only" or "writable") or "no data"
+                    return string.format("%s %s %s  %s free of %s%s",
+                        d.side, tostring(cur.mount or "-"), state,
+                        pool.bytes(cur.free), pool.bytes((cur.used or 0) + (cur.free or 0)), mark)
+                end,
+            }))
+        end
+    else
+        root:add(widgets.panel({ x = b.x, y = barsY, w = b.w, h = math.max(barsH, 3), title = "CAPACITY" }))
+        root:add(widgets.label({
+            x = b.x + 2, y = barsY + 1, w = b.w - 4,
+            value = "(no drive peripherals on this computer - attach a Disk Drive)",
+            role = "warn",
+        }))
+    end
+
+    buttonRow(app, root, buttonY, actionDefs(app, { "rescan" }))
+end
+
+---------------------------------------------------------------------------
+-- Drives: select one, act on it
+---------------------------------------------------------------------------
+local function renderDriveRow(s, x, y, w, d, idx, sel)
+    local bg = sel and theme.c("selection") or theme.c("panel")
+    local mark, role
+    if not d.hasDisk then
+        mark, role = "[EMPTY]", "dim"
+    elseif not d.mount then
+        mark, role = "[NODATA]", "warn"
+    elseif d.readOnly then
+        mark, role = "[R-ONLY]", "warn"
+    else
+        mark, role = "[OK]", "ok"
+    end
+    widget.text(s, x + 1, y, mark, theme.c(role), bg)
+    local avail = math.max(w - 8, 8)
+    local rest = string.format(" %-9s %-7s %s", d.side, tostring(d.mount or "-"),
+                               pool.bytes(d.free) .. " free")
+    widget.text(s, x + 8, y, widget.clip(rest, avail),
+        sel and theme.c("onAccent") or theme.c("text"), bg)
+end
+
+local function buildDrives(app, root)
+    local b = app.body()
+
+    -- Bottom-anchored detail and buttons; the list absorbs what is left.
+    local buttonY = b.y + b.h - 1
+    local detailH = 7
+    local detailY = buttonY - detailH
+    local listH = math.max(detailY - 1 - b.y, 1)
+
+    local lst = widgets.list({
+        x = b.x, y = b.y, w = b.w, h = listH,
+        items = pool.drives,
+        render = renderDriveRow,
+        empty = "(no drive peripherals attached)",
+        onSelect = function(d) selectedSide = d.side end,
+    })
+    root:add(lst)
+    app.defaultKey = lst
+
+    root:add(widgets.panel({ x = b.x, y = detailY, w = b.w, h = detailH, title = "DRIVE" }))
+    local lines = {
+        { "side",     function() local d = selectedDrive(); return d and d.side or "(nothing selected)" end },
+        { "mount",    function() local d = selectedDrive(); return d and tostring(d.mount or "-") or "-" end },
+        { "label",    function() local d = selectedDrive(); return d and tostring(d.label or "-") or "-" end },
+        { "disk id",  function() local d = selectedDrive(); return d and tostring(d.diskID or "-") or "-" end },
+        { "free",     function() local d = selectedDrive(); return d and pool.bytes(d.free) or "-" end },
+        { "files",    function()
+              local d = selectedDrive()
+              if not d then return "-" end
+              return tostring(d.files or 0) .. " files, " .. pool.bytes(d.used)
+                  .. (d.truncated and " (walk truncated - a floor, not the truth)" or "")
+          end },
+    }
+    for i, r in ipairs(lines) do
+        root:add(widgets.label({
+            x = b.x + 2, y = detailY + 1 + (i - 1), w = b.w - 4,
+            value = function() return widget.pad(r[1] .. ":", 11) .. tostring(r[2]()) end,
+            role = (i == 1) and "text" or "dim",
+        }))
+    end
+
+    buttonRow(app, root, buttonY, actionDefs(app, { "rescan", "eject" }))
+end
+
+---------------------------------------------------------------------------
+function build(app)
+    registerActions(app)
+    app.registerScreen("overview", "Overview", buildOverview)
+    app.registerScreen("drives",   "Drives",   buildDrives)
+end

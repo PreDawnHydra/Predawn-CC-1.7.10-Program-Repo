@@ -40,7 +40,13 @@ computers, with a terminal UI. See `MineSwarm/README.md`.
 
 ### DiskArray
 
-Design skeleton only — no code yet. Several Disk Drives on one computer presented
-as a single volume, served over rednet so other computers can use the floppies
-without owning a drive. `DiskArray/README.md` holds the design, including the
-1.75 drive-peripheral and mount-path facts the design is built on.
+Several Disk Drives on one computer presented as a single volume, with a clickable
+UI (Overview + Drives screens, capacity bars, Rescan and two-step Eject), on the
+computer screen or on a monitor. Slice 1 runs: discovery and pool stats only — no
+manifest, no striping, no rednet serving yet. `DiskArray/README.md` holds the
+design plus the 1.75 drive-peripheral and mount-path facts it is built on.
+
+```
+cd cc/DiskArray/Server
+diskarray_server.lua --monitor left
+```

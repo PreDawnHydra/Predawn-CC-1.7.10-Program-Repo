@@ -49,13 +49,24 @@ diskarray/screens     the Overview and Drives screens
 - **Overview** — pool totals (drives, disks in, mounted, writable, free total,
   smallest free, files, used, layout, last scan) and one capacity bar per drive.
 - **Drives** — a clickable list; the detail panel shows side, mount path, label,
-  disk id, free, and file count. `Rescan` re-reads the drives, `Eject` needs two
-  clicks within 5 seconds.
+  disk id, free, and file count. `Rescan` re-reads the drives and `Eject` ejects
+  the disk in the selected drive. Every button acts on a **single click**: it
+  lights up while the mouse button is held and goes back on release (a monitor
+  touch has no release event, so the next redraw clears it).
 
-Capacity is an **estimate**: 1.75 exposes no total size for a floppy, only
-`fs.getFreeSpace`. Used bytes come from a bounded walk of the mount, and a walk
+**Free space is live and follows the server config.** `fs.getFreeSpace` answers
+with the mount's configured limit minus what it holds (`FileMount`
+`getRemainingSpace`, and a floppy mount is created with `floppySpaceLimit`). So a
+server whose floppies are set to 1 GB shows roughly 1 GB free per floppy, and one
+set to 1 KB shows roughly 1 KB — the numbers are not baked into this program. The
+figures refresh on a `disk`/`disk_eject` event, on the Rescan button, and on the
+`--rescan` timer, not continuously.
+
+Capacity (the bar's denominator) is an **estimate**: 1.75 exposes no total size,
+so it is `free + used`, and used comes from a bounded walk of the mount. A walk
 that hits its entry or depth cap is marked `~` / "truncated" instead of being
-presented as exact.
+presented as exact. CC also charges a minimum block per file, so `used` from
+`fs.getSize` can read slightly lower than the space the mount has taken.
 
 ## Rules this code keeps
 
@@ -81,4 +92,5 @@ cd cc-dev/DiskArray/tests && timeout 120 node --max-old-space-size=1024 run.js 2
 Covers discovery, totals, the bounded walk (huge and deep trees), read-only and
 blank drives, methods that raise, both screens drawing without tripping the Lua
 5.1 `string.format("%s", nil)` rule, `monitor_touch` and `mouse_click` argument
-order, the two-step eject, and a drive disappearing mid-session.
+order, single-click eject with press/release feedback, the status bar keeping the
+note clear of the hint, and a drive disappearing mid-session.

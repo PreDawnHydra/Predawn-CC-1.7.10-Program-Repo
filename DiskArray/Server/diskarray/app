@@ -44,6 +44,10 @@ function create(opts)
         -- onEvent(event, p1, p2, p3, p4) sees EVERY event before the mapping
         -- below runs. Use it for hardware events (disk, disk_eject, ...).
         onEvent  = opts.onEvent,
+        -- press feedback and note lifetime
+        pressed  = nil,
+        noteAt   = 0,
+        noteFor  = opts.noteFor or 8,
         menuWidget = nil,
         menuW      = 0,
         statusWidget = nil,
@@ -89,6 +93,33 @@ function create(opts)
     function a.notify(msg, role)
         a.note = tostring(msg or "")
         a.noteRole = role or "dim"
+        a.noteAt = os.clock()
+    end
+
+    -- The status bar note is a transient acknowledgement, not a permanent
+    -- banner: once it goes stale the hint text has the row to itself again.
+    function a.expireNote()
+        if a.note ~= "" and (os.clock() - a.noteAt) > a.noteFor then
+            a.note, a.noteRole = "", "dim"
+        end
+    end
+
+    -----------------------------------------------------------------------
+    -- Press feedback. A button lights up on mouse_click and goes back on
+    -- mouse_up; a monitor touch (monitor_touch) has no release event, so the
+    -- tick clears it as well.
+    -----------------------------------------------------------------------
+    function a.setPressed(w)
+        a.clearPressed()
+        a.pressed = w
+        w.pressed = true
+    end
+
+    function a.clearPressed()
+        if a.pressed then
+            a.pressed.pressed = nil
+            a.pressed = nil
+        end
     end
 
     -----------------------------------------------------------------------
@@ -246,16 +277,23 @@ function create(opts)
         if y == a.h and a.statusWidget then return end
         local hit = a.root and a.root:hitTest(x, y)
         if not hit then a.setFocus(nil) return end
-        -- Focus follows the click for focusable widgets (text fields).
-        local isFocusable = false
-        for i = 1, #a.focusables do
-            if a.focusables[i] == hit then isFocusable = true break end
-        end
-        if isFocusable then a.setFocus(hit) else a.setFocus(nil) end
-        -- Visible acknowledgement that the click landed; a button's own action
-        -- may overwrite this with a more specific message.
+        -- A button is activated by the click, so it must NOT take the keyboard
+        -- focus: leaving the focus on it kept the button highlighted after the
+        -- click, which reads as the click never having been released. Tab and
+        -- the arrow keys still move focus, so the keyboard path is unaffected.
         if hit.kind == "button" then
+            a.setPressed(hit)
+            a.setFocus(nil)
+            -- Visible acknowledgement that the click landed; the button's own
+            -- action may overwrite this with a more specific message.
             a.notify("-> " .. (hit.label or "action"), "dim")
+        else
+            -- Focus follows the click for the other focusable widgets (fields).
+            local isFocusable = false
+            for i = 1, #a.focusables do
+                if a.focusables[i] == hit then isFocusable = true break end
+            end
+            if isFocusable then a.setFocus(hit) else a.setFocus(nil) end
         end
         local ok, err = pcall(hit.onClick, button, x, y)
         if not ok then a.notify("click failed: " .. tostring(err), "error") end
@@ -363,7 +401,9 @@ function create(opts)
             a.onClick(p2, p3, 1)
         elseif event == "monitor_resize" then
             -- ensureSurface() notices the new size on the next draw.
-        elseif event == "mouse_up" or event == "mouse_drag" then
+        elseif event == "mouse_up" then
+            a.clearPressed()
+        elseif event == "mouse_drag" then
             -- reserved for drag support
         elseif event == "mouse_scroll" then
             a.onScroll(p1, p2, p3)
@@ -391,6 +431,8 @@ function create(opts)
             local event, p1, p2, p3, p4 = os.pullEvent()
             if event == "timer" and p1 == a.timerToken then
                 a.timerToken = os.startTimer(a.refresh)
+                a.clearPressed()
+                a.expireNote()
                 if a.onTick then pcall(a.onTick) end
             else
                 a.dispatch(event, p1, p2, p3, p4)

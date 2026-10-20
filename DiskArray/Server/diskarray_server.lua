@@ -146,7 +146,9 @@ local a = app.create({
 })
 
 a.statusRight     = function() return pool.count() .. " drives  " .. pool.bytes(pool.summary().totalFree) .. " free" end
-a.statusRightText = function() return "up/down menu  enter=open  tab=focus  click works" end
+-- Kept short on purpose: the status bar clips the note to the room the hint
+-- leaves, so a long hint would leave no room for "rescanned: ..." and friends.
+a.statusRightText = function() return "enter=open  tab=focus" end
 
 screens.build(a)
 

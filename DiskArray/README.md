@@ -168,7 +168,7 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
 
 1. **Done (slice 1):** `Server/diskarray_server.lua` — drive discovery, pool
    totals, a capacity bar per drive, clickable Overview and Drives screens,
-   Rescan and two-step Eject, monitor support. Offline suite in `tests/`.
+   Rescan and single-click Eject, monitor support. Offline suite in `tests/`.
 2. Manifest read/write (`/disk*/.diskarray`), degraded detection, `label`.
 3. `put` / `get` / `ls` over rednet with chunking and checksums, `mirror` mode only.
 4. `Client/` program with the terminal UI.

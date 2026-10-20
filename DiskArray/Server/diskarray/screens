@@ -7,12 +7,10 @@
 --
 --  Everything is drawn from live pool records, and every control is a widget,
 --  so mouse_click on the computer terminal and monitor_touch on a monitor both
---  hit the same handlers.
+--  hit the same handlers. Every button acts on a single click.
 -- ===========================================================================
 
 local selectedSide = nil
-local pendingEject = nil   -- { side = ..., at = os.clock() } — two-step confirm
-local CONFIRM_WINDOW = 5   -- seconds the confirm stays armed
 
 ---------------------------------------------------------------------------
 -- Selection survives a rescan: the side name is the key, and a drive can
@@ -36,18 +34,13 @@ local function doRescan(app)
     app.notify("rescanned: " .. pool.lastScanNote(), "dim")
 end
 
+-- One click, like every other button. Ejecting a floppy is not treated as
+-- destructive here: the disk comes back out into the player's hand and goes
+-- straight back in, so a confirm step costs a click and protects nothing.
 local function doEject(app)
     local d = selectedDrive()
     if not d then app.notify("select a drive to eject first", "warn") return end
     if not d.hasDisk then app.notify(d.side .. " has no disk in it", "warn") return end
-    local armed = pendingEject and pendingEject.side == d.side
-              and (os.clock() - pendingEject.at) < CONFIRM_WINDOW
-    if not armed then
-        pendingEject = { side = d.side, at = os.clock() }
-        app.notify("click Eject again within " .. CONFIRM_WINDOW .. "s to eject " .. d.side, "warn")
-        return
-    end
-    pendingEject = nil
     local ok, msg = pool.eject(d.side)
     keepSelection()
     app.notify(msg, ok and "ok" or "error")

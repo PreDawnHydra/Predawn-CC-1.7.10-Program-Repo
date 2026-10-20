@@ -37,3 +37,10 @@ StartHere  ->  install_CC_Git  ->  /usr/git
 
 A server-plus-agents system (work in progress): a controller computer plus agent
 computers, with a terminal UI. See `MineSwarm/README.md`.
+
+### DiskArray
+
+Design skeleton only — no code yet. Several Disk Drives on one computer presented
+as a single volume, served over rednet so other computers can use the floppies
+without owning a drive. `DiskArray/README.md` holds the design, including the
+1.75 drive-peripheral and mount-path facts the design is built on.

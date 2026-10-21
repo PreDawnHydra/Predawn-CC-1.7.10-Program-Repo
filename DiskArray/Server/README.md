@@ -19,11 +19,40 @@ the root), so a clone, the computer root and a floppy all work as long as the
 `diskarray/` folder sits next to the program.
 
 ```
---monitor <side>   draw on a monitor instead of the computer screen
---refresh <secs>   redraw interval, default 1
---rescan  <secs>   drive re-scan interval, default 10
---help             usage
+--monitor <side>      draw on a monitor instead of the computer screen
+--refresh <secs>      redraw interval, default 1
+--rescan  <secs>      local drive re-scan interval, default 10
+--discover <secs>     ask the network for host drives, default 5
+--host-timeout <secs> drop a host silent this long, default 20
+--no-net              ignore modems: only this computer's drives
+--help                usage
 ```
+
+## Running a drive host (drives behind a modem)
+
+On any other computer with Disk Drives and a **wired modem**:
+
+```
+cd cc/DiskArray/Server
+diskarray_host.lua
+```
+
+It needs no UI and loads only `manifest`, `pool` and `net`. It answers the
+server's pings, pushes a fresh drive list when a disk goes in or out, and carries
+out orders the server sends (eject, label, write a manifest, clear a manifest) —
+always with its own copy of the manifest module, so the file format stays in one
+place.
+
+```
+--beacon <secs>     re-announce the drive list, default 10
+--allow <id,id>     only take orders from these computer IDs (default: any)
+--once              print what it would report, then exit (a check)
+```
+
+`--once` is the quick sanity check: it prints the drives and their manifests
+without touching rednet. Any computer on the rednet can send orders, so use
+`--allow` if the wire is shared. Ctrl+T stops a host; the server drops its
+drives after `--host-timeout` seconds of silence.
 
 A monitor is clickable: 1.75 fires `monitor_touch (side, x, y)` when a player
 clicks one — there is no `monitor_click` in this version — and the app loop maps
@@ -34,16 +63,21 @@ installed by this slice.
 
 ```
 diskarray_server.lua  entry point: arguments, module load, optional monitor
-                      redirect, first scan, crash reporting
+                      redirect, rednet plumbing, first scan, crash reporting
+diskarray_host.lua    the other end: exports this computer's drives over rednet
 diskarray/theme       colour roles (MineSwarm framework)
 diskarray/widget      base widget + drawing primitives (MineSwarm framework)
 diskarray/widgets     button, panel, label, menu, tabs, list, progress, field
 diskarray/app         screen manager + one event loop (MineSwarm framework,
                       plus monitor_touch/monitor_resize and an onEvent hook)
-diskarray/pool        drive discovery, capacity, totals, eject, label,
-                      array summary, Init array, Forget
+diskarray/pool        drives (local + remote), capacity, totals, eject, label,
+                      array grouping, slot planning, manifest writes
 diskarray/manifest    the .diskarray file: read, write, validate, member ids
-diskarray/screens     the Overview and Drives screens
+diskarray/net         the rednet protocol, both ends: chunking, checksums,
+                      batching, host roster, expiry
+diskarray/builder     the rules behind the Builder: what may join, what a build
+                      would do, join / leave / rename
+diskarray/screens     Overview, Drives and Builder screens
 ```
 
 ## If a member goes missing
@@ -86,16 +120,19 @@ sweep the drives. That is the next thing this slice would grow.
 
 ## Setting up an array in game
 
-1. Put a CC-formatted floppy in each drive you want in the array.
-2. On the Overview screen, click **Init array**. Every writable mounted disk gets
-   a `.diskarray` manifest; the title bar names the array id and says which
-   disks were skipped (a read-only floppy is skipped, and says so).
-3. The Overview now shows `array`, `members` (present/expected) and `state`.
-   Pull a member out and the state becomes `degraded`, naming the missing slot.
-   Put a copy of a member floppy in and it becomes `duplicate`.
-4. On the Drives screen, select a drive and use the field at the bottom to set
-   its floppy label (click, type, Enter). **Forget** removes that disk's manifest
-   and leaves its files alone.
+1. Put a CC-formatted floppy in each drive you want in the array. For drives on
+   another computer, run `diskarray_host.lua` there and press `Ping hosts`.
+2. **Builder → Devices**: click each floppy you want (it turns `[x]`). A disk that
+   will not be taken says why. `Add free disks` picks every usable one.
+3. **Builder → New**: type a name if you want one, pick a mode, and read the
+   plan — it shows the slot every disk will take before anything is written.
+   Press `Create array`.
+4. The Overview shows `array`, `members` (present/expected) and `state`. Pull a
+   member out and the state becomes `degraded`, naming the missing slot.
+5. **Builder → Repair**: select the array, select a free disk, press
+   `Join selected` — it lands in the hole and nobody else moves. `Forget member`
+   takes one out and leaves its files alone. `Rename array` rewrites the name on
+   every member disk.
 
 `.diskarray` is a dotfile, so `ls` will not show it — `type .diskarray` from the
 shell, or `fs.list()` from `lua`, will.
@@ -118,8 +155,24 @@ shell, or `fs.list()` from `lua`, will.
   Every button acts on a **single click**: it lights up while the mouse button is
   held and goes back on release (a monitor touch has no release event, so the
   next redraw clears it).
+- **Builder** — three sub-screens behind a tab strip:
+  - **Devices**: every drive on the network, sorted local first. `[#]` already in
+    an array, `[x]` selected for a new one, `[ ]` usable, `[-]` refused — and a
+    refused drive always says why. Buttons: `Rescan`, `Ping hosts`,
+    `Add free disks`, `Clear`.
+  - **New**: mode strip (`plain` today; `mirror` and `span` are shown as *not
+    implemented* rather than offered as working buttons), an optional name, and
+    the **plan** — the slot each disk would take, its free space, and whether it
+    sits behind a modem. The plan comes from the same slot planner the write
+    uses, so it cannot disagree with what happens next. Button: `Create array`.
+  - **Repair**: the arrays that exist, their member rows (a hole reads
+    `-- MISSING --`), and the free disks that could join. Buttons:
+    `Join selected`, `Forget member`, `Rename array`, `Rescan`.
 - **No status bar.** The body spans the whole screen. An action's note appears in
   the top-right of the title bar for 8 seconds, then the pool status returns.
+- **`Init array` is gone.** It enrolled every writable disk it could find; the
+  Builder's selection model replaces it. `pool.initArray` still exists as the
+  low-level writer, but it now takes an explicit key list and an array id.
 
 **Free space is live and follows the server config.** `fs.getFreeSpace` answers
 with the mount's configured limit minus what it holds (`FileMount`
@@ -164,7 +217,15 @@ order, single-click eject with press/release feedback, the cursor being off
 except inside a focused field, the body spanning the screen with no status bar,
 notes going to the title bar, a Rescan refreshing the view in place, capacity
 bars that render their caption instead of a closure, and a drive disappearing
-mid-session. The array half
+mid-session. The network half runs both ends of the protocol in one Lua state:
+chunking and its checksums (a corrupted or missing piece is refused, never
+passed through), batching a 25-drive host into three messages and reassembling
+them, orders getting an ack plus a fresh drive list, a foreign protocol version
+refused, and a silent host dropped out of the pool. The Builder half covers the
+rules (read-only refused, mirror mode refused until it writes anything, a member
+of another array refused with "Forget it first", names cleaned), the plan showing
+the slot it will take, a remote disk enrolled through the network route, rename
+and leave, and all three Builder sub-screens drawing. The array half
 covers manifest round-trips, re-init keeping the array id, garbage / foreign
 version / oversized manifests being refused rather than evaluated, degraded and
 duplicate detection, Forget, and the label path. The recovery half covers the

@@ -29,8 +29,11 @@
 local MAX_WALK_ENTRIES = 1500   -- hard cap on entries visited per measure()
 local MAX_WALK_DEPTH   = 6      -- directory depth cap
 
-local records  = {}             -- ordered by side name, for lists
-local bySide   = {}             -- side name -> record
+local records  = {}             -- ordered by key, for lists (local + remote)
+local bySide   = {}             -- key -> record; a local key IS its side name
+local localRec = {}             -- the local half of `records`, in side order
+local remote   = {}             -- drive snapshots reported by remote hosts
+local actFn    = nil            -- routes actions on remote drives (set by the entry)
 local lastScan = 0              -- os.clock() of the last scan
 local scanNote = "not scanned yet"
 
@@ -119,7 +122,7 @@ function scan()
         local side = names[i]
         local t = fsok(peripheral.getType, side)
         if t == "drive" then
-            local r = { side = side, ok = true, err = nil }
+            local r = { side = side, key = side, ok = true, err = nil }
 
             local v, e = call(side, "isDiskPresent")
             r.hasDisk = (v == true)
@@ -158,6 +161,10 @@ function scan()
                 if man then
                     r.array, r.slot = man.array, man.slot
                     r.member, r.mode = man.member, man.mode
+                    r.name = man.name
+                    -- the count, so the array maths does not have to care
+                    -- whether this record came from a file or a modem
+                    man.membersCount = (type(man.members) == "table") and #man.members or 0
                 end
             end
 
@@ -166,14 +173,87 @@ function scan()
         end
     end
 
+    localRec = fresh
+
+    -- Merge in what the remote hosts last told us. A remote record is a
+    -- snapshot, not a handle: it carries the same fields, minus anything that
+    -- would need the other computer to answer (see net.lua).
+    for i = 1, #remote do
+        local d = remote[i]
+        table.insert(fresh, d)
+        freshBy[d.key] = d
+    end
+
     records, bySide = fresh, freshBy
     lastScan = os.clock()
     if #records == 0 then
-        scanNote = "no drive peripherals attached"
+        scanNote = "no drives anywhere"
     else
-        scanNote = #records .. " drive(s)"
+        scanNote = #localRec .. " local"
+            .. (#remote > 0 and (", " .. #remote .. " remote") or "")
     end
     return records
+end
+
+---------------------------------------------------------------------------
+-- Remote drives
+---------------------------------------------------------------------------
+-- Feed in the drive snapshots a server got from its hosts (net.listen():drives()
+-- produces these). Nothing here talks to rednet: the entry program does the
+-- sending and hands the result over.
+function setRemote(list)
+    remote = {}
+    for i = 1, #(list or {}) do
+        local d = list[i]
+        local r = {
+            key      = d.key or (("#" .. tostring(d.computer) .. ":" .. tostring(d.side))),
+            side     = d.side,
+            computer = d.computer,
+            ok       = true,
+            hasDisk  = (d.hasDisk == true),
+            hasData  = (d.hasData == true),
+            mount    = d.mount,
+            label    = d.label,
+            diskID   = d.diskID,
+            readOnly = (d.readOnly == true),
+            free     = (type(d.free) == "number") and d.free or nil,
+            files    = d.files,
+            used     = d.used,
+            truncated = (d.truncated == true),
+            remote   = true,
+        }
+        if r.free ~= nil and type(r.used) == "number" then r.capacity = r.free + r.used end
+        if d.array then
+            r.manifest = { array = d.array, slot = d.slot, member = d.member,
+                           mode = d.mode, name = d.name,
+                           membersCount = tonumber(d.members) or 0 }
+            r.array, r.slot = d.array, d.slot
+            r.member, r.mode = d.member, d.mode
+            r.name = d.name
+        else
+            r.manifestErr = r.mount and "no manifest on this disk" or nil
+        end
+        table.insert(remote, r)
+    end
+    return #remote
+end
+
+function remoteCount() return #remote end
+
+-- The entry program installs the route for acting on a remote drive:
+-- fn(record, action, label) -> ok, msg. Without it, remote drives are visible
+-- but deliberately inert, which is better than pretending an eject happened.
+function setActFn(f) actFn = (type(f) == "function") and f or nil end
+
+-- The entry program hands the UI a way to describe its hosts (who answers for
+-- the drives behind a modem). pool itself never talks to rednet.
+local netInfoFn = nil
+function setNetInfo(f) netInfoFn = (type(f) == "function") and f or nil end
+function netInfo()
+    if netInfoFn == nil then return {} end
+    local ok, list = pcall(netInfoFn)
+    if ok and type(list) == "table" then return list end
+    return {}
 end
 
 function drives()  return records end
@@ -212,7 +292,9 @@ end
 ---------------------------------------------------------------------------
 -- The array: which array these disks belong to, and whether it is whole
 ---------------------------------------------------------------------------
-function arraySummary()
+-- Group every manifested drive by array id. Shared by arraySummary() (the one
+-- array this view cares about) and arrays() (every array on the network).
+local function grouped()
     local groups, order = {}, {}
     local unmanifested, unreadable = 0, 0
     for i = 1, #records do
@@ -221,8 +303,9 @@ function arraySummary()
             if r.manifest then
                 local g = groups[r.array]
                 if not g then
-                    g = { id = r.array, present = 0, slots = {}, seen = {},
-                          members = 0, dupes = 0, mode = r.mode }
+                    g = { id = r.array, name = r.name, mode = r.mode, present = 0,
+                          slots = {}, seen = {}, list = {}, members = 0, dupes = 0,
+                          free = 0 }
                     groups[r.array] = g
                     table.insert(order, r.array)
                 end
@@ -230,9 +313,15 @@ function arraySummary()
                 if g.seen[r.member] then g.dupes = g.dupes + 1 end
                 g.seen[r.member] = true
                 g.slots[r.slot] = (g.slots[r.slot] or 0) + 1
-                if type(r.manifest.members) == "table"
-                   and #r.manifest.members > g.members then
-                    g.members = #r.manifest.members
+                table.insert(g.list, r)
+                if type(r.free) == "number" then g.free = g.free + r.free end
+                local n = tonumber(r.manifest.membersCount) or 0
+                if n == 0 and type(r.manifest.members) == "table" then
+                    n = #r.manifest.members
+                end
+                if n > g.members then
+                    g.members = n
+                    g.name = r.manifest.name or g.name
                 end
             elseif r.manifestErr == "no manifest on this disk" then
                 unmanifested = unmanifested + 1
@@ -242,54 +331,169 @@ function arraySummary()
             end
         end
     end
+    return groups, order, unmanifested, unreadable
+end
 
-    -- The array this server cares about is the one with the most members
-    -- present; ties break on the id so the answer never flickers between scans.
+local function holes(g)
+    local out = {}
+    for slot = 1, g.members do
+        if not g.slots[slot] then table.insert(out, slot) end
+    end
+    return out
+end
+
+local function stateOf(g)
+    if #holes(g) > 0 then return "degraded" end
+    if g.dupes > 0 then return "duplicate" end
+    return "ok"
+end
+
+-- arraySummary(onlyID) - with an id, that array; without it, the array with the
+-- most members present (ties break on the id so the answer never flickers).
+function arraySummary(onlyID)
+    local groups, order, unmanifested, unreadable = grouped()
     local best = nil
-    for i = 1, #order do
-        local g = groups[order[i]]
-        if not best or g.present > best.present
-           or (g.present == best.present and g.id < best.id) then
-            best = g
+    if onlyID then
+        best = groups[onlyID]
+    else
+        for i = 1, #order do
+            local g = groups[order[i]]
+            if not best or g.present > best.present
+               or (g.present == best.present and g.id < best.id) then best = g end
         end
     end
 
     local s = { id = best and best.id or nil,
+                name = best and best.name or nil,
                 mode = best and best.mode or nil,
                 present = best and best.present or 0,
                 expected = best and best.members or 0,
                 dupes = best and best.dupes or 0,
+                free = best and best.free or 0,
                 missing = {},
+                members = {},
                 arrays = #order,
                 unmanifested = unmanifested,
                 unreadable = unreadable }
     if best then
-        for slot = 1, best.members do
-            if not best.slots[slot] then table.insert(s.missing, slot) end
-        end
+        s.missing = holes(best)
+        for i = 1, #best.list do table.insert(s.members, best.list[i]) end
+        s.state = stateOf(best)
+    else
+        s.state = "none"
     end
-    if not best then s.state = "none"
-    elseif #s.missing > 0 then s.state = "degraded"
-    elseif s.dupes > 0 then s.state = "duplicate"
-    else s.state = "ok" end
     return s
 end
 
+-- Every array visible from here, biggest first. This is what lets one server
+-- look after several arrays across several computers.
+function arrays()
+    local groups, order = grouped()
+    local out = {}
+    for i = 1, #order do
+        local g = groups[order[i]]
+        table.insert(out, { id = g.id, name = g.name, mode = g.mode,
+                            present = g.present, expected = g.members,
+                            missing = holes(g), dupes = g.dupes, free = g.free,
+                            state = stateOf(g), members = g.list })
+    end
+    table.sort(out, function(a, b)
+        if a.expected ~= b.expected then return a.expected > b.expected end
+        return a.id < b.id
+    end)
+    return out
+end
+
+---------------------------------------------------------------------------
 -- Write a manifest to every writable mounted disk. Slots are STICKY: a disk
 -- that is already a member keeps its slot and member id, and a fresh disk takes
 -- the lowest free slot. Renumbering looks harmless today (mode "plain" places
 -- no data), but once chunks are placed by slot it would scramble the array, so
 -- the rule is set now. Side-name order only decides the slots of a first,
 -- empty array.
-function initArray(mode)
+---------------------------------------------------------------------------
+-- Which slot each drive would take. Slots already held by a member of this
+-- array are kept; free slots go to the newcomers, lowest first. initArray() and
+-- the Builder's preview both call this, so a preview cannot disagree with what
+-- the write will actually do.
+---------------------------------------------------------------------------
+function planSlots(arrayID, keys)
+    local asked = {}
+    for i = 1, #(keys or {}) do asked[keys[i]] = true end
+
+    local taken, maxSlot = {}, 0
+    for i = 1, #records do
+        local r = records[i]
+        if not asked[r.key] and r.manifest and r.manifest.array == arrayID then
+            local s = tonumber(r.manifest.slot)
+            if s and s > 0 and not taken[s] then
+                taken[s] = true
+                if s > maxSlot then maxSlot = s end
+            end
+        end
+    end
+
+    -- Two passes, and the order matters: every existing member claims its own
+    -- slot BEFORE any newcomer takes a free one. Doing it in one pass lets a
+    -- newcomer that happens to be earlier in the list steal a member's slot and
+    -- renumber it, which is exactly the bug this whole routine exists to stop.
+    local slotOf, kept = {}, 0
+    for i = 1, #(keys or {}) do
+        local key = keys[i]
+        local r = bySide[key]
+        if r and r.manifest and r.manifest.array == arrayID then
+            local s = tonumber(r.manifest.slot)
+            if s and s > 0 and not taken[s] then
+                slotOf[key], kept = s, kept + 1
+                taken[s] = true
+                if s > maxSlot then maxSlot = s end
+            end
+        end
+    end
+    for i = 1, #(keys or {}) do
+        local key = keys[i]
+        if slotOf[key] == nil then
+            local n = 1
+            while taken[n] do n = n + 1 end
+            slotOf[key] = n
+            taken[n] = true
+            if n > maxSlot then maxSlot = n end
+        end
+    end
+    local out = {}
+    for i = 1, #(keys or {}) do
+        table.insert(out, { key = keys[i], slot = slotOf[keys[i]] })
+    end
+    return out, kept, maxSlot
+end
+
+---------------------------------------------------------------------------
+-- initArray(mode, keys, name)
+--   keys  optional list of drive KEYS to enrol; without it every writable
+--         mounted disk is enrolled (the broad sweep the Builder replaces)
+--   name  optional human name stored in the manifest
+-- A remote disk is written through the network route the entry program
+-- installed; with no route installed a remote disk is reported as skipped
+-- rather than pretending the write happened.
+function initArray(mode, keys, name, forceID)
+    local want = nil
+    if type(keys) == "table" then
+        want = {}
+        for i = 1, #keys do want[keys[i]] = true end
+    end
+
     local targets, skipped = {}, {}
     for i = 1, #records do
         local r = records[i]
-        if r.mount and r.readOnly ~= true then
+        if want and not want[r.key] then
+            -- not asked for: nobody touches it
+        elseif r.mount and r.readOnly ~= true then
             table.insert(targets, r)
         elseif r.mount then
             -- say why the array came out smaller than the drives attached
-            table.insert(skipped, r.side .. " read-only")
+            table.insert(skipped, r.key .. " read-only")
+        elseif want then
+            table.insert(skipped, r.key .. " has no mounted disk")
         end
     end
     if #targets == 0 then return false, "no writable mounted disk to initialise" end
@@ -300,34 +504,21 @@ function initArray(mode)
         local r = targets[i]
         if r.manifest and r.manifest.array then arrayID = r.manifest.array break end
     end
-    if not arrayID then arrayID = manifest.newArrayID() end
-
-    -- Plan the slots before writing anything: existing members keep theirs, and
-    -- the holes are filled first, so a spare lands in the slot that went empty
-    -- rather than starting a sixth member.
-    local plan, taken, maxSlot = {}, {}, 0
-    local kept = 0
-    for i = 1, #targets do
-        local r = targets[i]
-        local s = r.manifest and r.manifest.slot
-        if r.manifest and r.manifest.array == arrayID and type(s) == "number" and s > 0
-           and not taken[s] then
-            taken[s] = true
-            if s > maxSlot then maxSlot = s end
-            kept = kept + 1
-            table.insert(plan, { r = r, slot = s })
-        else
-            table.insert(plan, { r = r, slot = nil })
+    if not arrayID and forceID then arrayID = forceID end
+    if not arrayID then
+        for i = 1, #records do
+            local r = records[i]
+            if r.manifest and r.manifest.array then arrayID = r.manifest.array break end
         end
     end
-    local nextSlot = 1
-    for i = 1, #plan do
-        if plan[i].slot == nil then
-            while taken[nextSlot] do nextSlot = nextSlot + 1 end
-            plan[i].slot = nextSlot
-            taken[nextSlot] = true
-            if nextSlot > maxSlot then maxSlot = nextSlot end
-        end
+    if not arrayID then arrayID = manifest.newArrayID() end
+
+    local keysOf = {}
+    for i = 1, #targets do table.insert(keysOf, targets[i].key) end
+    local slots, kept, maxSlot = planSlots(arrayID, keysOf)
+    local plan = {}
+    for i = 1, #slots do
+        table.insert(plan, { r = bySide[slots[i].key], slot = slots[i].slot })
     end
 
     -- The member list is replicated on every disk, so any one disk can say what
@@ -338,9 +529,10 @@ function initArray(mode)
     local written, failed = 0, {}
     for i = 1, #plan do
         local p = plan[i]
-        local ok, msg = manifest.write(p.r.mount, manifest.build(arrayID, p.slot, members, mode or "plain"))
+        local ok, msg = writeManifest(p.r, manifest.build(arrayID, p.slot, members,
+                                                          mode or "plain", name))
         if ok then written = written + 1
-        else table.insert(failed, p.r.side .. ": " .. tostring(msg)) end
+        else table.insert(failed, p.r.key .. ": " .. tostring(msg)) end
     end
     scan()
     if written == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
@@ -351,35 +543,71 @@ function initArray(mode)
     return true, msg
 end
 
-function clearManifest(side)
-    local r = bySide[side]
-    if not r then return false, "no such drive: " .. tostring(side) end
-    if not r.mount then return false, tostring(side) .. " has no mounted disk" end
-    local ok, msg = manifest.clear(r.mount)
+---------------------------------------------------------------------------
+-- Writing a manifest, locally or through a host
+---------------------------------------------------------------------------
+function writeManifest(r, t)
+    if r.remote ~= true then
+        if not r.mount then return false, tostring(r.key) .. " has no mounted disk" end
+        return manifest.write(r.mount, t)
+    end
+    if actFn == nil then return false, "remote drive " .. tostring(r.key) .. ": no network route" end
+    local ok, msg = actFn(r, "manifest", nil, t)
+    return (ok == true), tostring(msg)
+end
+
+function dropManifest(r)
+    if r.remote ~= true then
+        if not r.mount then return false, tostring(r.key) .. " has no mounted disk" end
+        return manifest.clear(r.mount)
+    end
+    if actFn == nil then return false, "remote drive " .. tostring(r.key) .. ": no network route" end
+    local ok, msg = actFn(r, "unmanifest")
+    return (ok == true), tostring(msg)
+end
+
+function clearManifest(key)
+    local r = bySide[key]
+    if not r then return false, "no such drive: " .. tostring(key) end
+    if not r.mount then return false, tostring(key) .. " has no mounted disk" end
+    local ok, msg = dropManifest(r)
     scan()
     return ok, msg
 end
 
 ---------------------------------------------------------------------------
--- Actions
+-- Actions. Every one takes a drive KEY: a side name for a local drive, or
+-- "#7:back" for one behind a modem.
 ---------------------------------------------------------------------------
-function eject(side)
-    local r = bySide[side]
-    if not r then return false, "no such drive: " .. tostring(side) end
-    local ok, err = pcall(peripheral.call, side, "ejectDisk")
+function eject(key)
+    local r = bySide[key]
+    if not r then return false, "no such drive: " .. tostring(key) end
+    if r.remote == true then
+        if actFn == nil then return false, "remote drive " .. key .. ": no network route" end
+        local ok, msg = actFn(r, "eject")
+        scan()
+        return (ok == true), tostring(msg)
+    end
+    local ok, err = pcall(peripheral.call, r.side, "ejectDisk")
     scan()
     if not ok then return false, tostring(err) end
-    return true, "ejected " .. side
+    return true, "ejected " .. key
 end
 
-function setLabel(side, label)
-    local r = bySide[side]
-    if not r then return false, "no such drive: " .. tostring(side) end
+function setLabel(key, label)
+    local r = bySide[key]
+    if not r then return false, "no such drive: " .. tostring(key) end
     if type(label) ~= "string" or label == "" then return false, "label must be text" end
-    local ok, err = pcall(peripheral.call, side, "setDiskLabel", label)
+    if r.remote == true then
+        if actFn == nil then return false, "remote drive " .. key .. ": no network route" end
+        local ok, msg = actFn(r, "label", label)
+        scan()
+        return (ok == true), tostring(msg)
+    end
+    local ok, err = pcall(peripheral.call, r.side, "setDiskLabel", label)
     scan()
     if not ok then return false, tostring(err) end
-    return true, "labelled " .. side
+    return true, "labelled " .. key
 end
 
 ---------------------------------------------------------------------------

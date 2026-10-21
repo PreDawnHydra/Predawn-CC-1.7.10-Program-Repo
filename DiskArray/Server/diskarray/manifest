@@ -62,6 +62,7 @@ function valid(t)
     if type(t.member) ~= "string" or t.member == "" then return false, "no member id" end
     if type(t.members) ~= "table" then return false, "no member list" end
     if type(t.mode) ~= "string" then return false, "no layout mode" end
+    if t.name ~= nil and type(t.name) ~= "string" then return false, "bad name" end
     return true
 end
 
@@ -140,8 +141,8 @@ end
 ---------------------------------------------------------------------------
 -- Build the table for one member
 ---------------------------------------------------------------------------
-function build(arrayID, slot, members, mode)
-    return {
+function build(arrayID, slot, members, mode, name)
+    local t = {
         version = VERSION,
         array   = arrayID,
         slot    = slot,
@@ -151,4 +152,9 @@ function build(arrayID, slot, members, mode)
         created = math.floor(os.time()),
         server  = os.getComputerID(),
     }
+    -- An optional human name. Version 1 readers ignore unknown fields, and
+    -- valid() only checks it when it is there, so naming an array does not
+    -- change the manifest version.
+    if type(name) == "string" and name ~= "" then t.name = name end
+    return t
 end

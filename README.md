@@ -40,13 +40,16 @@ computers, with a terminal UI. See `MineSwarm/README.md`.
 
 ### DiskArray
 
-Several Disk Drives on one computer presented as a single volume, with a clickable
-UI (Overview + Drives screens, capacity bars, Rescan, single-click Eject), on the
-computer screen or on a monitor. Slice 2 runs: the array itself — each member
-floppy carries a `.diskarray` manifest, and the UI reports the array id, its
-members, and whether it is whole, degraded or has a duplicated member. No
-user-file striping and no rednet serving yet. `DiskArray/README.md` holds the
-design plus the 1.75 drive-peripheral and mount-path facts it is built on.
+Several Disk Drives presented as one volume, with a clickable UI: Overview,
+Drives, and an **Array Builder** that creates arrays, joins disks into them and
+repairs them (capacity bars, single-click Eject, labels, degraded/duplicate
+reporting). Slice 3 runs: drives behind a **wired modem** join the same pool —
+run `diskarray_host.lua` on another computer and its drives appear as
+`#7:back` — and the array definition still lives on the floppies, because a
+remote disk is enrolled by asking its own host to write the manifest. No
+user-file striping or `put`/`get` yet. `DiskArray/README.md` holds the design,
+the rednet protocol, and the 1.75 drive-peripheral and mount-path facts it is
+built on.
 
 ```
 cd cc/DiskArray/Server

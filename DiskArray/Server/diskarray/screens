@@ -57,13 +57,6 @@ local function doEject(app)
     app.rebuild()
 end
 
-local function doInit(app)
-    local ok, msg = pool.initArray("plain")
-    keepSelection()
-    app.notify(msg, ok and "ok" or "error")
-    app.rebuild()
-end
-
 -- Take one disk out of the array: removes its manifest, leaves the files alone.
 local function doForget(app)
     local d = selectedDrive()
@@ -79,8 +72,6 @@ end
 local function registerActions(app)
     app.registerAction("rescan", { label = "Rescan", style = "primary",
                                    run = function() doRescan(app) end })
-    app.registerAction("init",   { label = "Init array", style = "primary",
-                                   run = function() doInit(app) end })
     app.registerAction("eject",  { label = "Eject", style = "danger",
                                    run = function() doEject(app) end })
     app.registerAction("forget", { label = "Forget", style = "danger",
@@ -172,6 +163,15 @@ local function buildOverview(app, root)
         { "files",     function() return tostring(S().files) end, "dim" },
         { "used (files)", function() return pool.bytes(S().used) end, "dim" },
         { "last scan", function() return math.floor(pool.age()) .. "s ago: " .. pool.lastScanNote() end, "dim" },
+        { "hosts", function()
+              local hs = pool.netInfo()
+              if #hs == 0 then return "none (this computer only)" end
+              local out = {}
+              for i = 1, #hs do
+                  table.insert(out, "#" .. hs[i].computer .. " " .. hs[i].got .. "d " .. hs[i].age .. "s")
+              end
+              return table.concat(out, "  ")
+          end, "dim" },
     }
 
     -- Whether these rows exist at all is decided when the screen is built (a
@@ -290,7 +290,7 @@ local function buildOverview(app, root)
         }))
     end
 
-    buttonRow(app, root, buttonY, actionDefs(app, { "rescan", "init" }))
+    buttonRow(app, root, buttonY, actionDefs(app, { "rescan", "ping" }))
 end
 
 ---------------------------------------------------------------------------
@@ -394,8 +394,463 @@ local function buildDrives(app, root)
 end
 
 ---------------------------------------------------------------------------
+-- Builder: build arrays, join disks to them, repair them. This replaces the
+-- one "Init array" button, which enrolled every writable disk it could find and
+-- gave you no way to say "just this one".
+--
+-- Three sub-screens behind a tab strip, because the three jobs want different
+-- lists:
+--   Devices  every drive anywhere on the network, and whether it can be used
+--   New      the disks you picked, the slots they would take, then one Create
+--   Repair   the arrays that exist, their members and holes, and Join/Forget
+--
+-- Selection is deliberately explicit: a drive is only touched if you picked it.
+---------------------------------------------------------------------------
+local builderTab = "devices"
+local picked     = {}          -- key -> true: the pending New-array selection
+local selArray   = nil         -- array id selected on the Repair tab
+local selKey     = nil         -- free drive selected on a list
+local selMember  = nil         -- member selected on the Repair tab
+local pendingName = nil        -- name for the array being built
+local pendingMode  = "plain"
+
+local BUILDER_TABS = { { id = "devices", label = "Devices" },
+                       { id = "new",     label = "New" },
+                       { id = "repair",  label = "Repair" } }
+
+local function sortedDrives()
+    local out = {}
+    local all = pool.drives()
+    for i = 1, #all do table.insert(out, all[i]) end
+    table.sort(out, function(a, b)
+        local ca, cb = a.computer or 0, b.computer or 0
+        if ca ~= cb then return ca < cb end
+        return tostring(a.key) < tostring(b.key)
+    end)
+    return out
+end
+
+local function pickedKeys()
+    local raw = {}
+    for key, on in pairs(picked) do if on then table.insert(raw, key) end end
+    return builder.sortedKeys(raw)
+end
+
+local function forgetPicks()
+    -- a disk that left the pool must not stay selected and silently come back
+    for key, on in pairs(picked) do
+        if not pool.get(key) then picked[key] = nil end
+    end
+end
+
+local function togglePick(key)
+    local r = pool.get(key)
+    if not r then return false, "that drive is gone" end
+    if picked[key] then
+        picked[key] = nil
+        return true, "deselected " .. key
+    end
+    local ok, why = builder.usable(r)
+    if not ok then return false, key .. ": " .. why end
+    picked[key] = true
+    return true, "selected " .. key .. " (" .. why .. ")"
+end
+
+---------------------------------------------------------------------------
+-- Builder actions
+---------------------------------------------------------------------------
+local function doCreate(app)
+    local keys = pickedKeys()
+    local ok, msg = builder.create(keys, { mode = pendingMode, name = pendingName })
+    app.notify(msg, ok and "ok" or "error")
+    if ok then
+        picked = {}
+        builderTab = "repair"
+        selArray = nil
+    end
+    app.rebuild()
+end
+
+local function doJoin(app)
+    if not selArray then app.notify("select an array first", "warn") return end
+    if not selKey then app.notify("select a free disk first", "warn") return end
+    local ok, msg = builder.join(selArray, selKey)
+    app.notify(msg, ok and "ok" or "error")
+    app.rebuild()
+end
+
+local function doForgetMember(app)
+    if not selMember then app.notify("select a member to forget", "warn") return end
+    local ok, msg = builder.leave(selMember)
+    app.notify(msg, ok and "ok" or "error")
+    if selMember == selKey then selKey = nil end
+    selMember = nil
+    app.rebuild()
+end
+
+local function doRename(app)
+    if not selArray then app.notify("select an array first", "warn") return end
+    local ok, msg = builder.rename(selArray, pendingName or "")
+    app.notify(msg, ok and "ok" or "error")
+    pendingName = nil
+    app.rebuild()
+end
+
+local function doPing(app)
+    if app.pingHosts == nil then
+        app.notify("this server has no network (started with --no-net?)", "warn")
+        return
+    end
+    app.pingHosts()
+    app.notify("asked the network for its drives", "dim")
+end
+
+local function doAddFree(app)
+    local keys = builder.suggest()
+    for i = 1, #keys do picked[keys[i]] = true end
+    app.notify("selected " .. #keys .. " free disk(s)", "ok")
+    app.rebuild()
+end
+
+local function doClearPick(app)
+    picked = {}
+    app.notify("selection cleared", "dim")
+    app.rebuild()
+end
+
+local function registerBuilderActions(app)
+    app.registerAction("create",   { label = "Create array", style = "primary",
+                                     run = function() doCreate(app) end })
+    app.registerAction("join",     { label = "Join selected", style = "primary",
+                                     run = function() doJoin(app) end })
+    app.registerAction("forgetm",  { label = "Forget member", style = "danger",
+                                     run = function() doForgetMember(app) end })
+    app.registerAction("rename",   { label = "Rename array", style = "normal",
+                                     run = function() doRename(app) end })
+    app.registerAction("addfree",  { label = "Add free disks", style = "normal",
+                                     run = function() doAddFree(app) end })
+    app.registerAction("clearpick",{ label = "Clear", style = "normal",
+                                     run = function() doClearPick(app) end })
+    app.registerAction("ping",     { label = "Ping hosts", style = "normal",
+                                     run = function() doPing(app) end })
+end
+
+---------------------------------------------------------------------------
+-- Devices sub-screen
+---------------------------------------------------------------------------
+local function deviceItems()
+    local out = {}
+    local recs = sortedDrives()
+    for i = 1, #recs do
+        local r = recs[i]
+        local ok, why = builder.usable(r)
+        table.insert(out, {
+            key    = r.key,
+            label  = r.label,
+            usable = ok,
+            why    = r.manifest and ("array " .. tostring(r.slot)) or why,
+            member = r.manifest ~= nil,
+            where  = r.computer and ("host #" .. r.computer) or "local",
+            free   = r.free,
+        })
+    end
+    return out
+end
+
+local function renderDeviceRow(s, x, y, w, it, idx, sel)
+    local bg = sel and theme.c("selection") or theme.c("panel")
+    local mark, role
+    if it.member then
+        mark, role = "[#]", "dim"
+    elseif picked[it.key] then
+        mark, role = "[x]", "ok"
+    elseif it.usable then
+        mark, role = "[ ]", "text"
+    else
+        mark, role = "[-]", "warn"
+    end
+    widget.text(s, x + 1, y, mark, theme.c(role), bg)
+    local name = (it.label ~= nil and it.label ~= "") and it.label or "-"
+    local rest = string.format(" %-14s %-10s %-9s %s", it.key, name, it.where, it.why)
+    widget.text(s, x + 8, y, widget.clip(rest, math.max(w - 8, 8)),
+        sel and theme.c("onAccent") or theme.c("text"), bg)
+end
+
+local function builderDevices(app, root, b, y, h)
+    local listH = math.max(h - 3, 3)
+    root:add(widgets.panel({ x = b.x, y = y, w = b.w, h = listH + 2,
+                             title = "DRIVES  (click to select for a new array)" }))
+    local lst = widgets.list({
+        x = b.x + 1, y = y + 1, w = b.w - 2, h = listH,
+        items = deviceItems,
+        render = renderDeviceRow,
+        empty = "(no drives: attach a Disk Drive, or run diskarray_host.lua elsewhere)",
+        onSelect = function(it)
+            selKey = it.key
+            local ok, msg = togglePick(it.key)
+            app.notify(msg, ok and "ok" or "warn")
+            app.rebuild()
+        end,
+    })
+    root:add(lst)
+    app.defaultKey = lst
+
+    local keys = pickedKeys()
+    local remote = 0
+    for i = 1, #keys do
+        local r = pool.get(keys[i])
+        if r and r.computer then remote = remote + 1 end
+    end
+    root:add(widgets.label({
+        x = b.x + 1, y = y + listH + 1, w = b.w - 2,
+        value = #keys .. " selected (" .. (#keys - remote) .. " local, " .. remote
+                .. " remote)   [#] = already in an array",
+        role = "dim",
+    }))
+end
+
+---------------------------------------------------------------------------
+-- New sub-screen
+---------------------------------------------------------------------------
+local function renderModeRow(s, x, y, w, m, idx, sel)
+    local bg = theme.c("panel")
+    local role = m.ready and "text" or "warn"
+    local line = string.format(" %-8s %s", m.id, m.ready and "" or "(not implemented yet)")
+    widget.text(s, x + 1, y, widget.clip(line, w - 2),
+        (pendingMode == m.id) and theme.c("onAccent") or theme.c(role),
+        (pendingMode == m.id) and theme.c("selection") or bg)
+end
+
+local function builderNew(app, root, b, y, h)
+    local keys = pickedKeys()
+    local p = builder.plan(keys, { mode = pendingMode, name = pendingName })
+
+    -- Mode strip on the left, plan on the right; on a narrow screen the plan
+    -- goes under the modes instead of beside them.
+    local modeW = 10
+    local wide = b.w >= 44
+    local modeH = 2 + #builder.modes()
+    local planX = wide and (b.x + modeW + 1) or b.x
+    local planW = wide and (b.w - modeW - 1) or b.w
+    local planY = wide and y or (y + modeH + 1)
+    local planH = wide and math.max(h - 3, 4) or math.max(h - modeH - 4, 4)
+
+    root:add(widgets.panel({ x = b.x, y = y, w = modeW, h = modeH, title = "MODE" }))
+    for i, m in ipairs(builder.modes()) do
+        root:add(widgets.button({
+            x = b.x + 1, y = y + 1 + (i - 1), w = modeW - 2, h = 1,
+            label = m.id, style = (pendingMode == m.id) and "primary" or "normal",
+            action = function()
+                pendingMode = m.id
+                app.rebuild()
+            end,
+        }))
+    end
+
+    root:add(widgets.panel({ x = planX, y = planY, w = planW, h = planH,
+                             title = "PLAN" }))
+    local iy = planY + 1
+    local function line(text, role)
+        if iy > planY + planH - 2 then return end
+        root:add(widgets.label({ x = planX + 1, y = iy, w = planW - 2,
+                                 value = text, role = role or "text" }))
+        iy = iy + 1
+    end
+
+    line("name:  " .. (p.name or "(unnamed)") .. "   mode: " .. p.mode,
+         p.name and "text" or "dim")
+    line(#p.keys .. " disk(s), " .. pool.bytes(p.free) .. " free"
+         .. (p.remote > 0 and (", " .. p.remote .. " behind a modem") or ""), "info")
+    for i = 1, #p.lines do line(p.lines[i], "text") end
+    for i = 1, #p.warnings do line("! " .. p.warnings[i], "error") end
+    if #p.keys == 0 then
+        line("(pick disks on the Devices tab, or press Add free disks)", "warn")
+    end
+
+    -- The name field sits under the plan: type, Enter, and the plan above
+    -- updates. os.loadAPI keeps the ROM field's history, so Up recalls a name.
+    local fieldY = planY + planH
+    if fieldY <= b.y + b.h - 2 then
+        root:add(widgets.field({
+            x = b.x, y = fieldY, w = b.w, h = 1,
+            placeholder = "type an array name, press enter",
+            onEnter = function(line2)
+                pendingName = line2
+                app.rebuild()
+            end,
+        }))
+    end
+end
+
+---------------------------------------------------------------------------
+-- Repair sub-screen
+---------------------------------------------------------------------------
+local function arrayItems()
+    local out = {}
+    local all = pool.arrays()
+    for i = 1, #all do
+        local a = all[i]
+        table.insert(out, {
+            id = a.id, label = a.name, mode = a.mode,
+            text = string.format("%-16s %-6s %s/%s %s", a.name or a.id, a.mode,
+                                 a.present, a.expected, a.state),
+            missing = #a.missing,
+        })
+    end
+    return out
+end
+
+local function renderArrayRow(s, x, y, w, it, idx, sel)
+    local bg = sel and theme.c("selection") or theme.c("panel")
+    local role = (it.state == "ok") and "ok"
+                 or (it.state == "degraded" and "warn" or "error")
+    local fg = sel and theme.c("onAccent") or theme.c(role)
+    widget.text(s, x + 1, y, widget.clip(it.text, w - 2), fg, bg)
+end
+
+local function memberItems(arrayID)
+    local out = {}
+    if not arrayID then return out end
+    local a = pool.arraySummary(arrayID)
+    local bySlot = {}
+    for i = 1, #a.members do bySlot[a.members[i].slot] = a.members[i] end
+    for slot = 1, a.expected do
+        local r = bySlot[slot]
+        if r then
+            table.insert(out, { kind = "member", key = r.key, slot = slot,
+                text = string.format("%-3s %-14s %-10s %s", slot, r.key,
+                                     (r.label ~= nil and r.label ~= "") and r.label or "-",
+                                     r.computer and ("host #" .. r.computer) or "local") })
+        else
+            table.insert(out, { kind = "hole", slot = slot,
+                text = string.format("%-3s %-14s %s", slot, "-- MISSING --",
+                                     "put a disk in and press Join selected") })
+        end
+    end
+    return out
+end
+
+local function renderMemberRow(s, x, y, w, it, idx, sel)
+    local bg = sel and theme.c("selection") or theme.c("panel")
+    local role = (it.kind == "hole") and "error" or "text"
+    local fg = sel and theme.c("onAccent") or theme.c(role)
+    widget.text(s, x + 1, y, widget.clip(it.text, w - 2), fg, bg)
+end
+
+local function freeItems()
+    local out = {}
+    local c = builder.candidates()
+    table.sort(c, function(a, b)
+        local ca, cb = a.computer or 0, b.computer or 0
+        if ca ~= cb then return ca < cb end
+        return tostring(a.key) < tostring(b.key)
+    end)
+    for i = 1, #c do
+        local r = c[i]
+        table.insert(out, { key = r.key,
+            text = string.format("%-14s %-10s %-9s %s", r.key,
+                                 (r.label ~= nil and r.label ~= "") and r.label or "-",
+                                 r.computer and ("host #" .. r.computer) or "local",
+                                 pool.bytes(r.free or 0) .. " free") })
+    end
+    return out
+end
+
+local function builderRepair(app, root, b, y, h)
+    -- Three stacked lists: which array, who is in it, what could join it.
+    local arraysH = 3
+    local freeH   = 3
+    local memH    = math.max(h - (arraysH + 2) - (freeH + 2) - 2, 3)
+
+    root:add(widgets.panel({ x = b.x, y = y, w = b.w, h = arraysH + 2, title = "ARRAYS" }))
+    local la = widgets.list({
+        x = b.x + 1, y = y + 1, w = b.w - 2, h = arraysH,
+        items = arrayItems, render = renderArrayRow,
+        empty = "(no arrays yet - build one on the New tab)",
+        onSelect = function(it)
+            selArray = it.id
+            selMember = nil
+            app.rebuild()
+        end,
+    })
+    root:add(la)
+    app.defaultKey = la
+    y = y + arraysH + 2
+
+    root:add(widgets.panel({ x = b.x, y = y, w = b.w, h = memH + 2,
+                             title = "MEMBERS" }))
+    local lm = widgets.list({
+        x = b.x + 1, y = y + 1, w = b.w - 2, h = memH,
+        items = function() return memberItems(selArray) end,
+        render = renderMemberRow,
+        empty = "(select an array above)",
+        onSelect = function(it)
+            if it.kind == "member" then
+                selMember = it.key
+                app.notify("selected " .. it.key .. " - Forget removes it from the array", "dim")
+            else
+                app.notify("slot " .. it.slot .. " is empty - pick a free disk below", "warn")
+            end
+            app.rebuild()
+        end,
+    })
+    root:add(lm)
+    y = y + memH + 2
+
+    root:add(widgets.panel({ x = b.x, y = y, w = b.w, h = freeH + 2,
+                             title = "FREE DISKS (join these)" }))
+    local lf = widgets.list({
+        x = b.x + 1, y = y + 1, w = b.w - 2, h = freeH,
+        items = freeItems, render = renderMemberRow,
+        empty = "(no free writable disk anywhere)",
+        onSelect = function(it)
+            selKey = it.key
+            app.notify("selected " .. it.key .. " - Join puts it in the array", "dim")
+            app.rebuild()
+        end,
+    })
+    root:add(lf)
+end
+
+local function builderButtons()
+    if builderTab == "devices" then
+        return { "rescan", "ping", "addfree", "clearpick" }
+    elseif builderTab == "new" then
+        return { "create", "addfree", "clearpick" }
+    end
+    return { "join", "forgetm", "rename", "rescan" }
+end
+
+local function buildBuilder(app, root)
+    forgetPicks()
+    local b = app.body()
+    root:add(widgets.tabs({
+        x = b.x, y = b.y, w = b.w, h = 1,
+        items = BUILDER_TABS, current = builderTab,
+        onSelect = function(id)
+            builderTab = id
+            app.rebuild()
+        end,
+    }))
+
+    local buttonY = b.y + b.h - 1
+    local top = b.y + 2
+    local contentH = buttonY - 1 - top
+    if builderTab == "devices" then
+        builderDevices(app, root, b, top, contentH)
+    elseif builderTab == "new" then
+        builderNew(app, root, b, top, contentH)
+    else
+        builderRepair(app, root, b, top, contentH)
+    end
+    buttonRow(app, root, buttonY, actionDefs(app, builderButtons()))
+end
+
+---------------------------------------------------------------------------
 function build(app)
     registerActions(app)
+    registerBuilderActions(app)
     app.registerScreen("overview", "Overview", buildOverview)
     app.registerScreen("drives",   "Drives",   buildDrives)
+    app.registerScreen("builder",  "Builder",  buildBuilder)
 end

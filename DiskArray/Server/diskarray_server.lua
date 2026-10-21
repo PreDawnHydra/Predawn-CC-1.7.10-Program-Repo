@@ -25,11 +25,16 @@
 
 local USAGE = {
     "usage: diskarray_server.lua [--monitor <side>] [--refresh <secs>] [--rescan <secs>]",
+    "                            [--discover <secs>] [--host-timeout <secs>] [--no-net]",
     "",
-    "  --monitor <side>  put the UI on a monitor (clickable via monitor_touch)",
-    "  --refresh <secs>  redraw interval, default 1",
-    "  --rescan  <secs>  drive re-scan interval, default 10",
+    "  --monitor <side>    put the UI on a monitor (clickable via monitor_touch)",
+    "  --refresh <secs>    redraw interval, default 1",
+    "  --rescan  <secs>    local drive re-scan interval, default 10",
+    "  --discover <secs>   ask the network for host drives, default 5",
+    "  --host-timeout <s>  drop a host silent this long, default 20",
+    "  --no-net            ignore modems: only this computer's drives",
     "",
+    "Run diskarray_host.lua on any other computer whose drives you want here.",
     "Click a screen in the sidebar. On the keyboard: up/down move the sidebar,",
     "right/tab move into the buttons, enter presses them.",
 }
@@ -57,6 +62,7 @@ local function usage()
 end
 
 local monitorSide, refresh, rescanEvery = nil, 1, 10
+local noNet, discoverEvery, hostTimeout = false, 5, 20
 local argv = { ... }
 local i = 1
 while i <= #argv do
@@ -69,12 +75,20 @@ while i <= #argv do
         refresh = tonumber(argv[i + 1]) or refresh; i = i + 2
     elseif a == "--rescan" then
         rescanEvery = tonumber(argv[i + 1]) or rescanEvery; i = i + 2
+    elseif a == "--discover" then
+        discoverEvery = tonumber(argv[i + 1]) or discoverEvery; i = i + 2
+    elseif a == "--host-timeout" then
+        hostTimeout = tonumber(argv[i + 1]) or hostTimeout; i = i + 2
+    elseif a == "--no-net" then
+        noNet = true; i = i + 1
     else
         print("unknown argument: " .. tostring(a)); usage(); return
     end
 end
 if refresh < 0.5 then refresh = 0.5 end
 if rescanEvery < 1 then rescanEvery = 1 end
+if discoverEvery < 1 then discoverEvery = 1 end
+if hostTimeout < 5 then hostTimeout = 5 end
 
 ---------------------------------------------------------------------------
 -- Modules. NO ".lua" in these paths: os.loadAPI names the global from
@@ -84,6 +98,7 @@ if rescanEvery < 1 then rescanEvery = 1 end
 local MODULES = { ROOT .. "diskarray/theme", ROOT .. "diskarray/widget",
                   ROOT .. "diskarray/widgets", ROOT .. "diskarray/app",
                   ROOT .. "diskarray/manifest", ROOT .. "diskarray/pool",
+                  ROOT .. "diskarray/net", ROOT .. "diskarray/builder",
                   ROOT .. "diskarray/screens" }
 
 for m = 1, #MODULES do
@@ -122,9 +137,60 @@ if monitorSide then
 end
 
 ---------------------------------------------------------------------------
+-- Network: drives behind a wired modem belong to other computers, and this
+-- program never touches them directly. It asks; the host writes.
+---------------------------------------------------------------------------
+local MY_ID = os.getComputerID()
+local PROTO = net.protocol()
+local modems = {}
+local srv = net.listen({ timeout = hostTimeout })
+
+if not noNet then
+    local names = peripheral.getNames()
+    for n = 1, #names do
+        if peripheral.getType(names[n]) == "modem" then
+            if pcall(rednet.open, names[n]) then table.insert(modems, names[n]) end
+        end
+    end
+    if #modems == 0 then
+        print("note: no modem found - only drives on this computer will be visible")
+        print("      run diskarray_host.lua on a computer that has drives")
+    end
+end
+
+local function broadcast(msg)
+    for n = 1, #modems do pcall(rednet.broadcast, msg, PROTO) end
+end
+
+local lastPing = 0
+local function pingHosts()
+    if #modems == 0 then return end
+    lastPing = os.clock()
+    broadcast(net.pingMsg(MY_ID))
+end
+
+local function absorbRemote()
+    pool.setRemote(srv.drives())
+    pool.scan()
+end
+
+-- Acting on a remote drive is a request, not a call: the host does it and then
+-- pushes its new drive list, so the pool catches up within a tick rather than
+-- the UI blocking on a modem round trip.
+pool.setActFn(function(r, action, label, data)
+    if #modems == 0 then return false, "no modem: cannot reach host #" .. tostring(r.computer) end
+    local ok, err = pcall(rednet.send, r.computer, net.actMsg(MY_ID, r.computer, r.side,
+                                                             action, label, data), PROTO)
+    if not ok then return false, tostring(err) end
+    return true, "asked host #" .. tostring(r.computer) .. " to " .. tostring(action)
+end)
+pool.setNetInfo(function() return srv.hosts() end)
+
+---------------------------------------------------------------------------
 -- First scan, before any UI exists, so the screens always have data
 ---------------------------------------------------------------------------
 pool.scan()
+pingHosts()
 
 local a = app.create({
     title   = "DISKARRAY  id " .. tostring(os.getComputerID()) ..
@@ -136,7 +202,22 @@ local a = app.create({
     showStatusBar = false,
 
     -- A floppy swap is an event, not something to poll for.
-    onEvent = function(event)
+    onEvent = function(event, p1, p2, p3)
+        if event == "rednet_message" then
+            -- 1.75 order (rom/apis/rednet): <replyChannel> <message> <protocol>
+            local sender, message, protocol = p1, p2, p3
+            if protocol == PROTO and type(message) == "table" then
+                srv.onMessage(message)
+                absorbRemote()
+                a.rebuild()
+                local ev = srv.takeEvents()
+                for k = 1, #ev do a.notify(ev[k], "dim") end
+                if #ev == 0 then
+                    a.notify("host #" .. tostring(sender) .. " reported its drives", "dim")
+                end
+            end
+            return
+        end
         if pool.isPoolEvent(event) then
             pool.scan()
             a.rebuild()
@@ -145,19 +226,32 @@ local a = app.create({
     end,
 
     onTick = function()
+        local changed = false
         if pool.age() >= rescanEvery then
             pool.scan()
-            -- Rebuild follows the scan, so the view never shows numbers from an
-            -- older scan for longer than one refresh.
-            a.rebuild()
+            changed = true
         end
+        if #modems > 0 and os.clock() - lastPing >= discoverEvery then
+            lastPing = os.clock()
+            pingHosts()
+            if srv.expire() > 0 then changed = true end
+            absorbRemote()
+        end
+        if changed then a.rebuild() end
     end,
 })
 
+-- The Builder's "Ping hosts" button.
+a.pingHosts = function()
+    lastPing = os.clock()
+    pingHosts()
+end
+
 a.statusRight     = function()
     local a2 = pool.arraySummary()
-    return pool.count() .. " drives  " .. pool.bytes(pool.summary().totalFree)
-        .. " free  " .. a2.state
+    local hosts = #srv.hosts()
+    return pool.count() .. " drives" .. (hosts > 0 and (" (" .. hosts .. " host)") or "")
+        .. "  " .. pool.bytes(pool.summary().totalFree) .. " free  " .. a2.state
 end
 
 screens.build(a)
@@ -167,6 +261,10 @@ local ok, err = pcall(a.run)
 ---------------------------------------------------------------------------
 -- Leave the terminal in a sane state whatever happened
 ---------------------------------------------------------------------------
+if #modems > 0 then
+    broadcast(net.byeMsg(MY_ID))
+    for n = 1, #modems do pcall(rednet.close, modems[n]) end
+end
 if onMonitor then
     term.redirect(originalTerm)
 end

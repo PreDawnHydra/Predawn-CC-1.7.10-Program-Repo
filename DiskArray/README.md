@@ -138,6 +138,59 @@ skipped and why. `Forget` removes one disk's manifest and leaves its files
 alone. The label field on the Drives screen sets the floppy's label (click, type,
 Enter).
 
+## Arrays over the network (slice 3)
+
+A Disk Drive does not have to be plugged into the server computer. Run
+**`diskarray_host.lua`** on any computer with drives and a wired modem; the
+server pings the network and the host answers with a snapshot of its drives,
+which then appear in the same lists as local ones, keyed **`#<computerID>:<side>`**
+— for example `#7:back`.
+
+Three programs, one folder:
+
+| program | what it does |
+|---|---|
+| `diskarray_server.lua` | the brain and the UI: pool, arrays, Builder |
+| `diskarray_host.lua`   | exports one computer's drives over rednet |
+| `Client/` (later)      | a terminal UI for asking the array for files |
+
+**The array definition still lives on the floppies.** Enrolling a remote disk
+sends the manifest to *its* host, which writes it with its own copy of the
+manifest module. So a server can never invent a format the disks would not
+understand, and pulling a host's floppy out of a remote drive still leaves a
+readable member disk.
+
+**Protocol v1**, protocol id `diskarray`, plain tables (1.75 rednet carries
+tables natively, so there is no JSON anywhere): `ping`, `hosts`, `query`, `act`,
+`ack`, `bye`. Drive lists are **batched** (12 per message) with `seq/last/total`,
+because this build exposes no small hard packet limit — the only constant in the
+modem path is 128 open channels per modem — and nothing proves the limit is
+large either. A conversation that got cut short therefore shows up as
+`incomplete` instead of quietly losing the drives at the end. That limit still
+needs measuring in game.
+
+**Hosts are liveness-tracked**: a host that stops answering for `--host-timeout`
+seconds (default 20) is dropped and its drives leave the pool, so a computer
+that got blown up does not leave phantom members forever.
+
+## Builder
+
+`Init array` is gone: it enrolled every writable disk it could find and gave you
+no way to say "just this one". The Builder tab has three sub-screens:
+
+- **Devices** — every drive on the network, marked `[#]` already in an array,
+  `[x]` selected, `[ ]` usable, `[-]` unusable, and the unusable ones say why
+  ("read-only disk", "member of DA8.x - Forget it first").
+- **New** — mode strip, an optional name, and a **plan**: the exact slot each
+  disk will take, its free space, and whether it is behind a modem. The plan is
+  produced by the same slot planner the write uses, so it cannot lie.
+- **Repair** — the arrays that exist, their members with `-- MISSING --` rows,
+  and the free disks that could join. `Join selected`, `Forget member`,
+  `Rename array`.
+
+Slots are sticky everywhere: a member keeps its slot, newcomers take the lowest
+free one, and a join never renumbers the array.
+
 ## UI behaviour
 
 - **No bottom bar.** The body runs to the last row of the screen — there is no
@@ -234,9 +287,13 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
 2. **Done (slice 2):** manifest read/write at `<mount>/.diskarray`, array
    identity by member id, degraded/duplicate detection, `Init array`, `Forget`,
    and the label field.
-3. `put` / `get` / `ls` over rednet with chunking and checksums, `mirror` mode only.
-4. `Client/` program with the terminal UI.
-5. `stripe` and `span` modes.
+3. **Done (slice 3):** the Array Builder (Devices / New / Repair), multi-array
+   support, join/leave/rename, and drives behind a wired modem through
+   `diskarray_host.lua` and the `diskarray` rednet protocol.
+4. Chunked file transfer over that protocol, then `put` / `get` / `ls` and
+   `mirror` mode — the first thing that needs bytes to cross the modem.
+5. `Client/` program with the terminal UI.
+6. `stripe` and `span` modes.
 
 ## Tests
 

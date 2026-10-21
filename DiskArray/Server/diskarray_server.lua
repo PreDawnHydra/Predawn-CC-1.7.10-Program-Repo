@@ -83,7 +83,8 @@ if rescanEvery < 1 then rescanEvery = 1 end
 ---------------------------------------------------------------------------
 local MODULES = { ROOT .. "diskarray/theme", ROOT .. "diskarray/widget",
                   ROOT .. "diskarray/widgets", ROOT .. "diskarray/app",
-                  ROOT .. "diskarray/pool", ROOT .. "diskarray/screens" }
+                  ROOT .. "diskarray/manifest", ROOT .. "diskarray/pool",
+                  ROOT .. "diskarray/screens" }
 
 for m = 1, #MODULES do
     if not fs.exists(MODULES[m]) then
@@ -145,7 +146,11 @@ local a = app.create({
     end,
 })
 
-a.statusRight     = function() return pool.count() .. " drives  " .. pool.bytes(pool.summary().totalFree) .. " free" end
+a.statusRight     = function()
+    local a2 = pool.arraySummary()
+    return pool.count() .. " drives  " .. pool.bytes(pool.summary().totalFree)
+        .. " free  " .. a2.state
+end
 -- Kept short on purpose: the status bar clips the note to the room the hint
 -- leaves, so a long hint would leave no room for "rescanned: ..." and friends.
 a.statusRightText = function() return "enter=open  tab=focus" end

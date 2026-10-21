@@ -40,18 +40,39 @@ diskarray/widget      base widget + drawing primitives (MineSwarm framework)
 diskarray/widgets     button, panel, label, menu, tabs, list, progress, field
 diskarray/app         screen manager + one event loop (MineSwarm framework,
                       plus monitor_touch/monitor_resize and an onEvent hook)
-diskarray/pool        drive discovery, capacity, totals, eject, label
+diskarray/pool        drive discovery, capacity, totals, eject, label,
+                      array summary, Init array, Forget
+diskarray/manifest    the .diskarray file: read, write, validate, member ids
 diskarray/screens     the Overview and Drives screens
 ```
+
+## Setting up an array in game
+
+1. Put a CC-formatted floppy in each drive you want in the array.
+2. On the Overview screen, click **Init array**. Every writable mounted disk gets
+   a `.diskarray` manifest; the status bar names the array id and says which
+   disks were skipped (a read-only floppy is skipped, and says so).
+3. The Overview now shows `array`, `members` (present/expected) and `state`.
+   Pull a member out and the state becomes `degraded`, naming the missing slot.
+   Put a copy of a member floppy in and it becomes `duplicate`.
+4. On the Drives screen, select a drive and use the field at the bottom to set
+   its floppy label (click, type, Enter). **Forget** removes that disk's manifest
+   and leaves its files alone.
+
+`.diskarray` is a dotfile, so `ls` will not show it — `type .diskarray` from the
+shell, or `fs.list()` from `lua`, will.
 
 ## What the screens show
 
 - **Overview** — pool totals (drives, disks in, mounted, writable, free total,
-  smallest free, files, used, layout, last scan) and one capacity bar per drive.
+  smallest free, files, used) plus the array rows (array, members, state, and
+  missing slots / duplicates / disks-without-manifest / bad manifests when they
+  are not zero), and one capacity bar per drive showing its slot.
 - **Drives** — a clickable list; the detail panel shows side, mount path, label,
-  disk id, free, and file count. `Rescan` re-reads the drives and `Eject` ejects
-  the disk in the selected drive. Every button acts on a **single click**: it
-  lights up while the mouse button is held and goes back on release (a monitor
+  disk id, free, file count, and the manifest (slot + member id, or why there is
+  none). `Rescan` re-reads the drives, `Eject` ejects the disk in the selected
+  drive, `Forget` clears its manifest. Every button acts on a **single click**:
+  it lights up while the mouse button is held and goes back on release (a monitor
   touch has no release event, so the next redraw clears it).
 
 **Free space is live and follows the server config.** `fs.getFreeSpace` answers
@@ -72,8 +93,9 @@ presented as exact. CC also charges a minimum block per file, so `used` from
 
 - Discover drives at boot, on every `disk` / `disk_eject` event, and on the
   Rescan button. Mount paths (`disk`, `disk2`, …) are probed in attach order, so
-  they are never treated as identifiers for a physical drive — the side name and
-  `getDiskID()` are.
+  they are never treated as identifiers for a physical drive — the side name is,
+  and inside the array the member id from the manifest is. `getDiskID()` is the
+  floppy item's damage value: a hint, never a key.
 - Capacity and writability come from `fs.getFreeSpace` / `fs.isReadOnly`; the
   1.75 drive peripheral has no such method.
 - Every `fs.*` and `peripheral.*` call is wrapped: `fs.list` raises on a missing
@@ -93,4 +115,11 @@ Covers discovery, totals, the bounded walk (huge and deep trees), read-only and
 blank drives, methods that raise, both screens drawing without tripping the Lua
 5.1 `string.format("%s", nil)` rule, `monitor_touch` and `mouse_click` argument
 order, single-click eject with press/release feedback, the status bar keeping the
-note clear of the hint, and a drive disappearing mid-session.
+note clear of the hint, and a drive disappearing mid-session. The array half
+covers manifest round-trips, re-init keeping the array id, garbage / foreign
+version / oversized manifests being refused rather than evaluated, degraded and
+duplicate detection, Forget, and the label path.
+
+The suite loads the **real** `rom/apis/{colors,keys,textutils}` (vendored in
+`tests/rom/`, see the note there) instead of hand-written stubs, so colour
+values, key codes and `serialize`/`unserialize` behaviour are the 1.75 ones.

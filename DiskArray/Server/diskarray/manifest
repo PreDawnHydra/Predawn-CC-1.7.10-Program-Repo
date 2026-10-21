@@ -1,0 +1,154 @@
+-- ===========================================================================
+--  manifest.lua   ->  global `manifest`
+-- ---------------------------------------------------------------------------
+--  The per-floppy metadata that turns a pile of disks into an array. Each
+--  member carries a copy of the same information at <mount>/.diskarray, RAID
+--  style: the array id, this disk's slot, the member id, and the full member
+--  list. That means the array can be recognised from the disks alone — no
+--  state has to survive on the computer.
+--
+--  Why not use getDiskID() as the identity? In 1.75 it is the floppy item's
+--  DAMAGE VALUE (ItemDiskLegacy.getDiskID -> ItemStack.func_77960_j), assigned
+--  once at crafting, and it returns -1 when the damage is 0 or less. So it is a
+--  useful hint and a bad primary key: it can be missing and it can collide.
+--  The member id written here is the identity; getDiskID is only displayed and
+--  used to warn about a likely swap.
+--
+--  1.75 facts this file depends on:
+--    textutils.serialize / textutils.unserialize exist (Lua format, not JSON);
+--    unserialize returns nil on garbage rather than raising;
+--    fs.open returns nil for a missing file but RAISES on a read-only mount;
+--    fs read handles drop a trailing newline (harmless here: serialize output
+--    ends with "}", and unserialize does not care);
+--    `ls` hides dotfiles, so .diskarray is invisible in game but real to fs.*.
+--
+--  unserialize is `load("return "..s, "unserialize", "t", {})` — it evaluates
+--  text. The env is empty, so it cannot reach os/fs, but this file still only
+--  hands it a brace-balanced slice of a size-capped file.
+-- ===========================================================================
+
+local FILE       = ".diskarray"
+local VERSION    = 1
+local MAX_BYTES  = 8000     -- a manifest bigger than this is not ours to parse
+
+function fileName() return FILE end
+function pathFor(mount) return fs.combine(mount, FILE) end
+function version() return VERSION end
+
+---------------------------------------------------------------------------
+-- Identity. Member ids are derived from the array id plus the slot, so they
+-- are unique inside an array without needing a random number generator (CC's
+-- math.random is not seeded per computer). Two disks claiming the same member
+-- id is exactly the copied-disk case the array should report, not hide.
+---------------------------------------------------------------------------
+function newArrayID()
+    return "DA" .. tostring(os.getComputerID()) .. "." .. tostring(math.floor(os.time()))
+end
+
+function memberID(arrayID, slot)
+    return tostring(arrayID) .. "#" .. tostring(slot)
+end
+
+---------------------------------------------------------------------------
+-- Shape check. Anything that does not look like ours is reported, not used.
+---------------------------------------------------------------------------
+function valid(t)
+    if type(t) ~= "table" then return false, "not a table" end
+    if t.version ~= VERSION then
+        return false, "manifest version " .. tostring(t.version) .. " (this build writes " .. VERSION .. ")"
+    end
+    if type(t.array) ~= "string" or t.array == "" then return false, "no array id" end
+    if type(t.slot) ~= "number" or t.slot < 1 then return false, "no slot number" end
+    if type(t.member) ~= "string" or t.member == "" then return false, "no member id" end
+    if type(t.members) ~= "table" then return false, "no member list" end
+    if type(t.mode) ~= "string" then return false, "no layout mode" end
+    return true
+end
+
+---------------------------------------------------------------------------
+-- Read
+---------------------------------------------------------------------------
+function read(mount)
+    if type(mount) ~= "string" or mount == "" then return nil, "no mount path" end
+    local p = pathFor(mount)
+
+    local okE, exists = pcall(fs.exists, p)
+    if not okE then return nil, tostring(exists) end
+    if not exists then return nil, "no manifest on this disk" end
+
+    local okH, h = pcall(fs.open, p, "r")
+    if not okH then return nil, tostring(h) end
+    if not h then return nil, "cannot open " .. p end
+
+    local okR, raw = pcall(h.readAll)
+    pcall(h.close)
+    if not okR then return nil, tostring(raw) end
+    if type(raw) ~= "string" then return nil, "cannot read " .. p end
+    if #raw > MAX_BYTES then return nil, "manifest is " .. #raw .. " bytes, too big to be ours" end
+
+    -- Only hand unserialize a balanced {...} block: it keeps stray text, log
+    -- spew and half-written files away from load().
+    local body = string.match(raw, "%b{}")
+    if not body then return nil, "not a manifest (no table found)" end
+
+    local okU, t = pcall(textutils.unserialize, body)
+    if not okU then return nil, tostring(t) end
+    if type(t) ~= "table" then return nil, "not a manifest (unreadable)" end
+
+    local okV, why = valid(t)
+    if not okV then return nil, why end
+    return t
+end
+
+---------------------------------------------------------------------------
+-- Write
+---------------------------------------------------------------------------
+function write(mount, t)
+    if type(mount) ~= "string" or mount == "" then return false, "no mount path" end
+    local okV, why = valid(t)
+    if not okV then return false, why end
+
+    local okS, text = pcall(textutils.serialize, t)
+    if not okS or type(text) ~= "string" then return false, "cannot serialise the manifest" end
+    if #text > MAX_BYTES then return false, "manifest would be " .. #text .. " bytes, too big" end
+
+    local p = pathFor(mount)
+    local okH, h = pcall(fs.open, p, "w")   -- raises on a read-only mount
+    if not okH then return false, tostring(h) end
+    if not h then return false, "cannot write " .. p end
+
+    local okW, err = pcall(h.write, text)
+    pcall(h.close)
+    if not okW then return false, tostring(err) end
+    return true, p
+end
+
+---------------------------------------------------------------------------
+-- Remove (used when a disk is taken out of the array)
+---------------------------------------------------------------------------
+function clear(mount)
+    if type(mount) ~= "string" or mount == "" then return false, "no mount path" end
+    local p = pathFor(mount)
+    local okE, exists = pcall(fs.exists, p)
+    if not okE then return false, tostring(exists) end
+    if not exists then return true, "nothing to remove" end
+    local okD, err = pcall(fs.delete, p)
+    if not okD then return false, tostring(err) end
+    return true, p
+end
+
+---------------------------------------------------------------------------
+-- Build the table for one member
+---------------------------------------------------------------------------
+function build(arrayID, slot, members, mode)
+    return {
+        version = VERSION,
+        array   = arrayID,
+        slot    = slot,
+        member  = memberID(arrayID, slot),
+        members = members,
+        mode    = mode or "plain",
+        created = math.floor(os.time()),
+        server  = os.getComputerID(),
+    }
+end

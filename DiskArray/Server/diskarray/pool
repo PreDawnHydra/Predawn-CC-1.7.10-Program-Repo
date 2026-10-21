@@ -2,8 +2,10 @@
 --  pool.lua   ->  global `pool`
 -- ---------------------------------------------------------------------------
 --  The disk pool: what drives are attached, what is in them, and how much room
---  the pool has. No writes to floppies here except setLabel/eject, and no
---  manifest yet (that is roadmap step 2) — this slice is discovery + stats.
+--  the pool has. Slice 2 adds the array itself: each member floppy carries a
+--  .diskarray manifest (see manifest.lua), the pool works out which array it is
+--  looking at, and reports missing or duplicated members. It still does not
+--  write user files or talk to other computers.
 --
 --  API facts this file is built on, all read out of ComputerCraft1.75.jar:
 --    drive peripheral methods: isDiskPresent, getDiskLabel, setDiskLabel,
@@ -14,7 +16,9 @@
 --      getName, getSize, isDir, isReadOnly, list, makeDir, move, open.
 --    Mount paths are probed as disk, disk2, disk3... in ATTACH order, so a
 --    mount path says nothing about which physical drive it belongs to. The
---    stable-ish identifiers are the peripheral side name and getDiskID().
+--    identifiers are the peripheral side name and, for the array, the member
+--    id written into the manifest — getDiskID() is the floppy item's damage
+--    value and can be -1 or collide, so it is a hint, never a key.
 --
 --  Every loop here is bounded (MAX_WALK_* below) and every filesystem and
 --  peripheral call is wrapped: fs.list raises on a missing path or a file,
@@ -146,6 +150,15 @@ function scan()
                     -- An estimate, not a fact: 1.75 exposes no total size.
                     r.capacity = r.free + used
                 end
+
+                -- Array membership lives on the disk, not on the computer.
+                local man, merr = manifest.read(r.mount)
+                r.manifest = man
+                r.manifestErr = man and nil or merr
+                if man then
+                    r.array, r.slot = man.array, man.slot
+                    r.member, r.mode = man.member, man.mode
+                end
             end
 
             table.insert(fresh, r)
@@ -197,6 +210,122 @@ function summary()
 end
 
 ---------------------------------------------------------------------------
+-- The array: which array these disks belong to, and whether it is whole
+---------------------------------------------------------------------------
+function arraySummary()
+    local groups, order = {}, {}
+    local unmanifested, unreadable = 0, 0
+    for i = 1, #records do
+        local r = records[i]
+        if r.mount then
+            if r.manifest then
+                local g = groups[r.array]
+                if not g then
+                    g = { id = r.array, present = 0, slots = {}, seen = {},
+                          members = 0, dupes = 0, mode = r.mode }
+                    groups[r.array] = g
+                    table.insert(order, r.array)
+                end
+                g.present = g.present + 1
+                if g.seen[r.member] then g.dupes = g.dupes + 1 end
+                g.seen[r.member] = true
+                g.slots[r.slot] = (g.slots[r.slot] or 0) + 1
+                if type(r.manifest.members) == "table"
+                   and #r.manifest.members > g.members then
+                    g.members = #r.manifest.members
+                end
+            elseif r.manifestErr == "no manifest on this disk" then
+                unmanifested = unmanifested + 1
+            else
+                -- a manifest that is there but unreadable is its own problem
+                unreadable = unreadable + 1
+            end
+        end
+    end
+
+    -- The array this server cares about is the one with the most members
+    -- present; ties break on the id so the answer never flickers between scans.
+    local best = nil
+    for i = 1, #order do
+        local g = groups[order[i]]
+        if not best or g.present > best.present
+           or (g.present == best.present and g.id < best.id) then
+            best = g
+        end
+    end
+
+    local s = { id = best and best.id or nil,
+                mode = best and best.mode or nil,
+                present = best and best.present or 0,
+                expected = best and best.members or 0,
+                dupes = best and best.dupes or 0,
+                missing = {},
+                arrays = #order,
+                unmanifested = unmanifested,
+                unreadable = unreadable }
+    if best then
+        for slot = 1, best.members do
+            if not best.slots[slot] then table.insert(s.missing, slot) end
+        end
+    end
+    if not best then s.state = "none"
+    elseif #s.missing > 0 then s.state = "degraded"
+    elseif s.dupes > 0 then s.state = "duplicate"
+    else s.state = "ok" end
+    return s
+end
+
+-- Write a manifest to every writable mounted disk. Slots follow the side-name
+-- order the scan uses, so the same drives in the same setup get the same slots.
+function initArray(mode)
+    local targets, skipped = {}, {}
+    for i = 1, #records do
+        local r = records[i]
+        if r.mount and r.readOnly ~= true then
+            table.insert(targets, r)
+        elseif r.mount then
+            -- say why the array came out smaller than the drives attached
+            table.insert(skipped, r.side .. " read-only")
+        end
+    end
+    if #targets == 0 then return false, "no writable mounted disk to initialise" end
+
+    -- keep the array already on the disks; only a fresh set gets a new id
+    local arrayID = nil
+    for i = 1, #targets do
+        local r = targets[i]
+        if r.manifest and r.manifest.array then arrayID = r.manifest.array break end
+    end
+    if not arrayID then arrayID = manifest.newArrayID() end
+
+    local members = {}
+    for i = 1, #targets do members[i] = manifest.memberID(arrayID, i) end
+
+    local written, failed = 0, {}
+    for i = 1, #targets do
+        local r = targets[i]
+        local ok, msg = manifest.write(r.mount, manifest.build(arrayID, i, members, mode or "plain"))
+        if ok then written = written + 1
+        else table.insert(failed, r.side .. ": " .. tostring(msg)) end
+    end
+    scan()
+    if written == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
+    for i = 1, #skipped do table.insert(failed, skipped[i]) end
+    local msg = "initialised " .. written .. " disk(s) as " .. arrayID
+    if #failed > 0 then msg = msg .. ", skipped " .. table.concat(failed, "; ") end
+    return true, msg
+end
+
+function clearManifest(side)
+    local r = bySide[side]
+    if not r then return false, "no such drive: " .. tostring(side) end
+    if not r.mount then return false, tostring(side) .. " has no mounted disk" end
+    local ok, msg = manifest.clear(r.mount)
+    scan()
+    return ok, msg
+end
+
+---------------------------------------------------------------------------
 -- Actions
 ---------------------------------------------------------------------------
 function eject(side)
@@ -235,8 +364,4 @@ function bytes(n)
     if n >= 1000000 then return (math.floor(n / 100000) / 10) .. "MB" end
     if n >= 1000   then return (math.floor(n / 100) / 10) .. "KB" end
     return n .. "B"
-end
-
-function mode()
-    return "discovery (no array manifest yet)"
 end

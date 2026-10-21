@@ -1,9 +1,11 @@
 # DiskArray
 
-**Status: slice 1 runs.** The server program shows a clickable pool of the Disk
-Drives on its computer — totals plus a capacity bar per drive — on the computer
-screen or on a monitor. There is no manifest, no striping/mirroring and no
-rednet yet; the rest of this file is the design those steps will implement.
+**Status: slice 2 runs.** The server finds the Disk Drives, shows a clickable pool
+(totals plus a capacity bar per drive) on the computer screen or a monitor, and
+now knows the **array**: each member floppy carries a `.diskarray` manifest, and
+the UI reports the array id, its members, and whether it is whole, degraded or
+has a duplicated member. Still no user-file striping/mirroring and no rednet;
+the rest of this file is the design those steps will implement.
 
 Several **Disk Drives** on one computer, presented as a single volume ("the array"),
 and served over **rednet** so other computers can read and write floppies without
@@ -98,6 +100,37 @@ player clicks one, and the UI maps that to a left click.
 it would write `/startup`, a computer-wide change, for a program that so far
 only reads.
 
+## Array identity (slice 2)
+
+Each member floppy carries its own copy of the array metadata at
+`<mount>/.diskarray`, written with `textutils.serialize` — RAID-style, so the
+array is recognisable from the disks alone and nothing has to survive on the
+computer. It holds: the array id, this disk's slot, this disk's member id, the
+full member list, the layout mode, and who created it.
+
+**`getDiskID()` is not an identity.** In 1.75 it is the floppy item's *damage
+value* (`ItemDiskLegacy.getDiskID` → `ItemStack.func_77960_j`), assigned once
+when the floppy is crafted, and it returns `-1` when the damage is 0 or less. It
+can be missing and it can collide, so it is displayed as a hint and used to warn
+about a likely swap — never used as a key. The member id written in the manifest
+is the identity: `<arrayID>#<slot>`, derived rather than random (CC's
+`math.random` is not seeded per computer). Two disks claiming the same member id
+is the copied-floppy case, and the UI reports it as `duplicate` instead of
+pretending not to notice.
+
+**States the pool can be in:** `none` (no manifest anywhere), `ok` (every member
+listed is present), `degraded` (a listed slot is missing — the UI names the
+slots), `duplicate` (two disks claim one member). Disks that are mounted but
+have no manifest, and manifests that exist but cannot be read, are counted
+separately so a half-built array is visible.
+
+**Buttons:** `Init array` writes a manifest to every writable mounted disk
+(slots follow side-name order, so the same setup gets the same slots; an
+existing array id is reused rather than invented again) and says which disks it
+skipped and why. `Forget` removes one disk's manifest and leaves its files
+alone. The label field on the Drives screen sets the floppy's label (click, type,
+Enter).
+
 ## Design
 
 **Membership.** Each member floppy carries a manifest at `/disk*/.diskarray`
@@ -169,7 +202,9 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
 1. **Done (slice 1):** `Server/diskarray_server.lua` — drive discovery, pool
    totals, a capacity bar per drive, clickable Overview and Drives screens,
    Rescan and single-click Eject, monitor support. Offline suite in `tests/`.
-2. Manifest read/write (`/disk*/.diskarray`), degraded detection, `label`.
+2. **Done (slice 2):** manifest read/write at `<mount>/.diskarray`, array
+   identity by member id, degraded/duplicate detection, `Init array`, `Forget`,
+   and the label field.
 3. `put` / `get` / `ls` over rednet with chunking and checksums, `mirror` mode only.
 4. `Client/` program with the terminal UI.
 5. `stripe` and `span` modes.

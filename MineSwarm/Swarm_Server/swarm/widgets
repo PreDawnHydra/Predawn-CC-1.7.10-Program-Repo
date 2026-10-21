@@ -22,6 +22,10 @@ function button(opts)
         local bg, fg
         if not w.enabled then
             bg, fg = theme.c("panel"), theme.c("dim")
+        elseif w.pressed then
+            -- Held down: lights up on mouse_click, back to normal on mouse_up
+            -- (or on the next tick, since a monitor touch has no release).
+            bg, fg = theme.c("buttonPress"), theme.c("onButtonPress")
         elseif w.focused then
             bg, fg = theme.c("buttonHi"), theme.c("onButtonHi")
         elseif w.style == "primary" then
@@ -433,12 +437,18 @@ function statusbar(opts)
         local l, r = w.left, w.right
         if type(l) == "function" then l = l() end
         if type(r) == "function" then r = r() end
-        widget.text(s, w.x, w.y, widget.clip(l, w.w), theme.c("dim"), theme.c("panel"))
-        if r and r ~= "" then
-            local rs = tostring(r)
-            -- Clamp so a hint longer than the terminal cannot draw off-screen.
+        -- The right-hand text is drawn FIRST and the left text is clipped to
+        -- the room that is left. Writing the left text across the whole row and
+        -- then the hint over it leaves a faint fragment of the note behind --
+        -- that is the stray grey text that used to appear at the bottom right.
+        local rs = (r and r ~= "") and tostring(r) or ""
+        if rs ~= "" then
             local rx = math.max(w.x, w.x + w.w - #rs)
             widget.text(s, rx, w.y, widget.clip(rs, w.x + w.w - rx), theme.c("borderHi"), theme.c("panel"))
+        end
+        local room = w.w - #rs - 1
+        if room > 0 then
+            widget.text(s, w.x, w.y, widget.clip(l, room), theme.c("dim"), theme.c("panel"))
         end
     end
     return w

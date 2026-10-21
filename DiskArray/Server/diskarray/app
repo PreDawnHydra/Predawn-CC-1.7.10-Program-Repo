@@ -223,7 +223,14 @@ function create(opts)
         a.statusWidget = widgets.statusbar({
             x = 1, y = a.h, w = a.w, h = 1,
             left  = function() return a.note end,
-            right = function() return a.statusRightText and a.statusRightText() or "" end,
+            -- While a note is live it owns the whole row. Drawing the key hint
+            -- at the same time is what left a faint fragment of the note
+            -- sitting in the status bar after a click; the hint comes back when
+            -- the note expires.
+            right = function()
+                if a.note ~= "" then return "" end
+                return a.statusRightText and a.statusRightText() or ""
+            end,
         })
     end
 

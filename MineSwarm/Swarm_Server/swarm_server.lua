@@ -114,7 +114,9 @@ end
 a.statusRight      = function() return "up " .. fmtUp(os.clock()) end
 -- The bottom bar carries the last action plus the key hints only; fleet
 -- counts live on the Dashboard and Turtles screens now.
-a.statusRightText  = function() return "up/down menu  enter=open  tab=focus" end
+-- Kept short on purpose: the status bar clips the note to the room the hint
+-- leaves, so a long hint would leave no room for "-> <action>" and friends.
+a.statusRightText  = function() return "enter=open  tab=focus" end
 
 -- Declarative actions feed the Cluster tab.
 local defs = core.actionDefs()

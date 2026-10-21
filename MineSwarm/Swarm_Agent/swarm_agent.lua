@@ -102,7 +102,9 @@ local a = app.create({
     onRednet = agent.onRednet,
 })
 a.statusRight     = function() return agent.status() end
-a.statusRightText = function() return "up/down menu  enter=open  tab=focus" end
+-- Kept short on purpose: the status bar clips the note to the room the hint
+-- leaves, so a long hint would leave no room for "-> <action>" and friends.
+a.statusRightText = function() return "enter=open  tab=focus" end
 
 screens.build(a)
 

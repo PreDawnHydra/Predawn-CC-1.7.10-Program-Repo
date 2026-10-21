@@ -61,3 +61,23 @@ for) on every run, which relaunches it at boot. `Quit` on the Settings tab write
 
 `/startup` itself is not in this repo — it is generated. For `git` itself see the
 `CC_git` folder.
+
+## UI behaviour
+
+Every button acts on a **single click**: it lights up while the mouse button is
+held and goes back on release (`mouse_up`). A click does not take the keyboard
+focus, so a button never stays highlighted after you click it — Tab and the
+arrows still move focus. The status bar shows the last action as a note, and
+while that note is live it owns the row; the key hints come back once the note
+expires (8s).
+
+The UI framework (`swarm/theme`, `swarm/widget`, `swarm/widgets`, `swarm/app`) is
+shared with DiskArray, which carries a copy of it. One offline suite checks both
+programs — phase 2 covers MineSwarm's copies:
+
+```
+cd cc-dev/DiskArray/tests && timeout 120 node --max-old-space-size=1024 run.js 2>&1 | tail -20
+```
+
+Keep those four files byte-identical between `Swarm_Server/swarm/` and
+`Swarm_Agent/swarm/`.

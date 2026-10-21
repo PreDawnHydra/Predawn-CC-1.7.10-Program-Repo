@@ -46,6 +46,44 @@ diskarray/manifest    the .diskarray file: read, write, validate, member ids
 diskarray/screens     the Overview and Drives screens
 ```
 
+## If a member goes missing
+
+**Pulling the floppy** (or pressing `Eject`): the drive fires `disk_eject`, the
+server rescans immediately, and the Overview goes `state: degraded` with
+`missing slots: 2`. Nothing is lost — every member floppy carries the full
+member list, so the definition of the array survives on the disks that are still
+there.
+
+**Pulling the drive block itself**: that fires `peripheral_detach`, not a disk
+event, and the server rescans on that too — the drive just leaves the list and
+the array shows the same hole.
+
+**Restore it**: put the same floppy back in **any** drive. Membership lives on
+the floppy, not on the drive, so it comes back as the same member in the same
+slot and the state returns to `ok`. It does not have to go back into the drive it
+came out of — the side name is only where a floppy happens to be plugged in right
+now.
+
+**Replace it**: put a blank, CC-formatted floppy in and press **Init array**.
+Slots are sticky: the surviving members keep their slot and member id, and the
+blank takes the lowest free slot — the hole. The message reads
+`initialised 8 disk(s) as DA8.x (4 kept, 4 joined)`.
+
+Two things to know about `Init array`:
+
+- it enrols **every writable mounted disk**, so take out any floppy you do *not*
+  want in the array first — or press **Forget** on it afterwards, which clears
+  its manifest and leaves its files alone;
+- a read-only floppy is skipped and named in the message, which is why an array
+  can come out one disk short.
+
+If a **copy** of a member floppy turns up (a backup you put back in), the state
+becomes `duplicate` instead of quietly accepting two disks that claim to be one
+member: select the one you want and press `Forget` on the other.
+
+There is no per-disk **Join** yet, so adding one member means letting `Init array`
+sweep the drives. That is the next thing this slice would grow.
+
 ## Setting up an array in game
 
 1. Put a CC-formatted floppy in each drive you want in the array.
@@ -129,7 +167,11 @@ bars that render their caption instead of a closure, and a drive disappearing
 mid-session. The array half
 covers manifest round-trips, re-init keeping the array id, garbage / foreign
 version / oversized manifests being refused rather than evaluated, degraded and
-duplicate detection, Forget, and the label path.
+duplicate detection, Forget, and the label path. The recovery half covers the
+things that matter when hardware moves: a member pulled out degrades the array
+and names the hole, the same floppy in a different drive comes back as the same
+member in the same slot, breaking the drive block (`peripheral_detach`) refreshes
+the pool too, and a blank disk joining never renumbers the members.
 
 The suite loads the **real** `rom/apis/{colors,keys,textutils}` (vendored in
 `tests/rom/`, see the note there) instead of hand-written stubs, so colour

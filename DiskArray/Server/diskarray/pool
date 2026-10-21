@@ -275,8 +275,12 @@ function arraySummary()
     return s
 end
 
--- Write a manifest to every writable mounted disk. Slots follow the side-name
--- order the scan uses, so the same drives in the same setup get the same slots.
+-- Write a manifest to every writable mounted disk. Slots are STICKY: a disk
+-- that is already a member keeps its slot and member id, and a fresh disk takes
+-- the lowest free slot. Renumbering looks harmless today (mode "plain" places
+-- no data), but once chunks are placed by slot it would scramble the array, so
+-- the rule is set now. Side-name order only decides the slots of a first,
+-- empty array.
 function initArray(mode)
     local targets, skipped = {}, {}
     for i = 1, #records do
@@ -298,20 +302,51 @@ function initArray(mode)
     end
     if not arrayID then arrayID = manifest.newArrayID() end
 
-    local members = {}
-    for i = 1, #targets do members[i] = manifest.memberID(arrayID, i) end
-
-    local written, failed = 0, {}
+    -- Plan the slots before writing anything: existing members keep theirs, and
+    -- the holes are filled first, so a spare lands in the slot that went empty
+    -- rather than starting a sixth member.
+    local plan, taken, maxSlot = {}, {}, 0
+    local kept = 0
     for i = 1, #targets do
         local r = targets[i]
-        local ok, msg = manifest.write(r.mount, manifest.build(arrayID, i, members, mode or "plain"))
+        local s = r.manifest and r.manifest.slot
+        if r.manifest and r.manifest.array == arrayID and type(s) == "number" and s > 0
+           and not taken[s] then
+            taken[s] = true
+            if s > maxSlot then maxSlot = s end
+            kept = kept + 1
+            table.insert(plan, { r = r, slot = s })
+        else
+            table.insert(plan, { r = r, slot = nil })
+        end
+    end
+    local nextSlot = 1
+    for i = 1, #plan do
+        if plan[i].slot == nil then
+            while taken[nextSlot] do nextSlot = nextSlot + 1 end
+            plan[i].slot = nextSlot
+            taken[nextSlot] = true
+            if nextSlot > maxSlot then maxSlot = nextSlot end
+        end
+    end
+
+    -- The member list is replicated on every disk, so any one disk can say what
+    -- the array should look like when it is whole.
+    local members = {}
+    for s = 1, maxSlot do members[s] = manifest.memberID(arrayID, s) end
+
+    local written, failed = 0, {}
+    for i = 1, #plan do
+        local p = plan[i]
+        local ok, msg = manifest.write(p.r.mount, manifest.build(arrayID, p.slot, members, mode or "plain"))
         if ok then written = written + 1
-        else table.insert(failed, r.side .. ": " .. tostring(msg)) end
+        else table.insert(failed, p.r.side .. ": " .. tostring(msg)) end
     end
     scan()
     if written == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
     for i = 1, #skipped do table.insert(failed, skipped[i]) end
     local msg = "initialised " .. written .. " disk(s) as " .. arrayID
+        .. " (" .. kept .. " kept, " .. (written - kept) .. " joined)"
     if #failed > 0 then msg = msg .. ", skipped " .. table.concat(failed, "; ") end
     return true, msg
 end
@@ -350,10 +385,13 @@ end
 ---------------------------------------------------------------------------
 -- Events: the drive peripheral queues "disk" and "disk_eject" with the drive
 -- name, so a scan on those is what keeps the pool honest when someone walks up
--- and swaps a floppy.
+-- and swaps a floppy. Breaking the drive block itself fires neither - it fires
+-- peripheral_detach - and that has to refresh the pool too, otherwise a pulled
+-- drive looks fine for up to a refresh interval.
 ---------------------------------------------------------------------------
 function isPoolEvent(event)
     return event == "disk" or event == "disk_eject"
+        or event == "peripheral_attach" or event == "peripheral_detach"
 end
 
 ---------------------------------------------------------------------------

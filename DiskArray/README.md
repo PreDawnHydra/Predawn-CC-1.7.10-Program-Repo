@@ -124,6 +124,13 @@ slots), `duplicate` (two disks claim one member). Disks that are mounted but
 have no manifest, and manifests that exist but cannot be read, are counted
 separately so a half-built array is visible.
 
+**Slots are sticky.** Re-running `Init array` never renumbers existing members: a
+disk that is already a member keeps its slot and member id, and a fresh disk
+takes the lowest free slot. Side-name order only decides the slots of a first,
+empty array. Renumbering would be harmless today (mode `plain` places no data),
+but once chunks are laid out by slot it would scramble the array, so the rule is
+set now.
+
 **Buttons:** `Init array` writes a manifest to every writable mounted disk
 (slots follow side-name order, so the same setup gets the same slots; an
 existing array id is reused rather than invented again) and says which disks it

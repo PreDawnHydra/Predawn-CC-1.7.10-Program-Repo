@@ -25,7 +25,8 @@
 
 local USAGE = {
     "usage: diskarray_server.lua [--monitor <side>] [--refresh <secs>] [--rescan <secs>]",
-    "                            [--discover <secs>] [--host-timeout <secs>] [--no-net]",
+    "                            [--discover <secs>] [--host-timeout <secs>]",
+    "                            [--file-timeout <secs>] [--no-net]",
     "",
     "  --monitor <side>    put the UI on a monitor (clickable via monitor_touch)",
     "  --refresh <secs>    redraw interval, default 1",
@@ -63,6 +64,7 @@ end
 
 local monitorSide, refresh, rescanEvery = nil, 1, 10
 local noNet, discoverEvery, hostTimeout = false, 5, 20
+local fileTimeout, fileTimeoutOpt = 15, nil
 local argv = { ... }
 local i = 1
 while i <= #argv do
@@ -77,6 +79,8 @@ while i <= #argv do
         rescanEvery = tonumber(argv[i + 1]) or rescanEvery; i = i + 2
     elseif a == "--discover" then
         discoverEvery = tonumber(argv[i + 1]) or discoverEvery; i = i + 2
+    elseif a == "--file-timeout" then
+        fileTimeoutOpt = tonumber(argv[i + 1]); i = i + 2
     elseif a == "--host-timeout" then
         hostTimeout = tonumber(argv[i + 1]) or hostTimeout; i = i + 2
     elseif a == "--no-net" then
@@ -88,6 +92,7 @@ end
 if refresh < 0.5 then refresh = 0.5 end
 if rescanEvery < 1 then rescanEvery = 1 end
 if discoverEvery < 1 then discoverEvery = 1 end
+if type(fileTimeoutOpt) == "number" and fileTimeoutOpt > 0 then fileTimeout = fileTimeoutOpt end
 if hostTimeout < 5 then hostTimeout = 5 end
 
 ---------------------------------------------------------------------------
@@ -99,7 +104,7 @@ local MODULES = { ROOT .. "diskarray/theme", ROOT .. "diskarray/widget",
                   ROOT .. "diskarray/widgets", ROOT .. "diskarray/app",
                   ROOT .. "diskarray/manifest", ROOT .. "diskarray/pool",
                   ROOT .. "diskarray/net", ROOT .. "diskarray/builder",
-                  ROOT .. "diskarray/screens" }
+                  ROOT .. "diskarray/files", ROOT .. "diskarray/screens" }
 
 for m = 1, #MODULES do
     if not fs.exists(MODULES[m]) then
@@ -185,6 +190,45 @@ pool.setActFn(function(r, action, label, data)
     return true, "asked host #" .. tostring(r.computer) .. " to " .. tostring(action)
 end)
 pool.setNetInfo(function() return srv.hosts() end)
+
+---------------------------------------------------------------------------
+-- File transfer needs an ANSWER, not just a request, so a put or a get waits
+-- for its host. os.pullEvent in a nested loop is how 1.75 does that: the UI
+-- stops redrawing while a file crosses the wire, other hosts' pushes are
+-- dropped (the next --discover tick puts them back), and the wait is bounded by
+-- a timer so a dead host cannot hang the program.
+---------------------------------------------------------------------------
+local function askHost(computer, msg, timeout)
+    if type(computer) ~= "number" then return false, "not a remote drive" end
+    if #modems == 0 then return false, "no modem: cannot reach host #" .. tostring(computer) end
+    local wait = (type(timeout) == "number" and timeout > 0) and timeout or fileTimeout
+    local deadline = os.clock() + wait
+    local okSend, serr = pcall(rednet.send, computer, msg, PROTO)
+    if not okSend then return false, tostring(serr) end
+    os.startTimer(wait)
+    while true do
+        local ev, a1, a2 = os.pullEvent()
+        if ev == "rednet_message" then
+            -- 1.75 order: (replyChannel = the sender's computer id, message, protocol)
+            local sender, message = a1, a2
+            if sender == computer and type(message) == "table" and message.id == msg.id then
+                return true, message
+            end
+        elseif ev == "timer" then
+            if os.clock() >= deadline - 0.05 then
+                return false, "no answer from host #" .. tostring(computer)
+                    .. " in " .. wait .. "s"
+            end
+            os.startTimer(math.max(0.2, deadline - os.clock()))
+        elseif ev == "terminate" then
+            return false, "interrupted"
+        elseif pool.isPoolEvent(ev) then
+            pool.scan()
+        end
+    end
+end
+
+files.setTransport(askHost)
 
 ---------------------------------------------------------------------------
 -- First scan, before any UI exists, so the screens always have data

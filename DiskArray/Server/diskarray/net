@@ -17,6 +17,15 @@
 --   ack   { p, t, from, v, to, ok, msg }             answer to act
 --   bye   { p, t, from, v }                          host is going away
 --
+-- File ops (v1, added with the transfer slice) - all paths are RELATIVE to the
+-- drive's mount, and the host is the only thing that touches its own filesystem:
+--   fstat {p,t,from,v,to,path}                    -> {t="fstat",size,lines,sum,trailing}
+--   fread {p,t,from,v,to,path}                    -> {t="flines",path,lines={...},sum,trailing}
+--   fwipe {p,t,from,v,to,path}                    truncate/create, then ack
+--   fchunk{p,t,from,v,to,path,off,part,sum,last}  append one piece, then ack
+--   fdir  {p,t,from,v,to,path}                    -> {t="flist",path,names={...}}
+--   fdel  {p,t,from,v,to,path}                    ack
+--
 -- A remote drive record is deliberately small and deliberately NOT a live
 -- handle: it is a snapshot the host took, with the manifest flattened to the
 -- four fields the array maths needs plus the member count. Reading a file on
@@ -99,8 +108,12 @@ end
 ---------------------------------------------------------------------------
 -- Message constructors (used by both ends)
 ---------------------------------------------------------------------------
+local seq = 0
+local function nextID() seq = seq + 1 return seq end
+function requestID() return seq end
+
 local function base(t, from)
-    return { p = PROTO, t = t, from = from, v = VERSION }
+    return { p = PROTO, t = t, from = from, v = VERSION, id = nextID() }
 end
 
 function pingMsg(from)  return base("ping", from) end
@@ -122,6 +135,84 @@ function ackMsg(from, to, ok, msg)
     local m = base("ack", from)
     m.to = to; m.ok = (ok == true); m.msg = tostring(msg or "")
     return m
+end
+
+---------------------------------------------------------------------------
+-- File message constructors
+---------------------------------------------------------------------------
+function fstatMsg(from, to, path)  local m = base("fstat", from); m.to = to; m.path = path; return m end
+function freadMsg(from, to, path)  local m = base("fread", from);  m.to = to; m.path = path; return m end
+function fwipeMsg(from, to, path)  local m = base("fwipe", from);  m.to = to; m.path = path; return m end
+function fdirMsg(from, to, path)   local m = base("fdir", from);   m.to = to; m.path = path; return m end
+function fdelMsg(from, to, path)   local m = base("fdel", from);   m.to = to; m.path = path; return m end
+
+function fchunkMsg(from, to, path, piece)
+    local m = base("fchunk", from)
+    m.to, m.path, m.i, m.part, m.sum, m.last = to, path, piece.i, piece.part, piece.sum, piece.last
+    return m
+end
+
+local function fileSize(path)
+    local ok, v = pcall(fs.getSize, path)
+    if ok and type(v) == "number" then return v end
+    return nil
+end
+
+-- Read a text file the way 1.75 allows. fs.open(path,"r") gives ONLY
+-- readLine/readAll/close (FSAPI$1 in the jar), and readAll drops newlines, so
+-- the file travels as a list of lines plus a `trailing` flag: the caller
+-- rejoins with "\n" and puts the final newline back when the raw size says it
+-- was there. That is the only faithful text round trip this version offers.
+function readLines(path)
+    if type(path) ~= "string" or path == "" then return nil, "no path" end
+    local f, err = nil, nil
+    local ok, handle = pcall(fs.open, path, "r")
+    if not ok then return nil, tostring(handle) end
+    if handle == nil then return nil, "no such file: " .. path end
+    f = handle
+    local lines, n = {}, 0
+    while true do
+        local okL, line = pcall(f.readLine)
+        if not okL then pcall(f.close); return nil, tostring(line) end
+        if line == nil then break end
+        n = n + 1
+        lines[n] = line
+        if n >= 20000 then break end     -- bounded: a floppy cannot be walked forever
+    end
+    pcall(f.close)
+    local joined = table.concat(lines, "\n")
+    local size = fileSize(path)
+    return { lines = lines, text = joined, sum = checksum(joined),
+             size = size, lines_n = n,
+             trailing = (type(size) == "number" and size == #joined + 1) }
+end
+
+-- Append one piece of a file. The host checks the offset against the file it has
+-- in front of it, so a chunk that arrives out of order or twice is refused
+-- rather than silently producing a file that is almost right.
+function appendChunk(path, piece)
+    if type(piece) ~= "table" or type(piece.part) ~= "string" then return false, "no piece" end
+    if type(piece.sum) == "number" and piece.sum ~= checksum(piece.part) then
+        return false, "piece failed its checksum before it was written"
+    end
+    local here = fileSize(path)
+    if here == nil then
+        if (piece.i or 1) ~= 1 then
+            return false, "piece " .. tostring(piece.i) .. " arrived before piece 1"
+        end
+        here = 0
+    end
+    if type(piece.off) == "number" and piece.off ~= here then
+        return false, "piece at " .. tostring(piece.off) .. " but the file is " .. here .. " bytes"
+    end
+    local ok, handle = pcall(fs.open, path, "a")
+    if not ok then return false, tostring(handle) end
+    if handle == nil then return false, "cannot open " .. path .. " for writing" end
+    local okW, werr = pcall(handle.write, piece.part)
+    pcall(handle.flush)
+    pcall(handle.close)
+    if not okW then return false, tostring(werr) end
+    return true, "wrote " .. #piece.part .. " bytes at " .. tostring(here)
 end
 
 -- One drive record on the wire. Kept flat and small on purpose: a 40-drive host
@@ -192,6 +283,24 @@ function serve(opts)
         return out
     end
 
+    -- A path is always "<side>/<path inside that drive>". The host refuses
+    -- anything else, so a message cannot reach outside a drive the operator
+    -- chose to export, and cannot name another computer's mount.
+    function h.resolve(p)
+        if type(p) ~= "string" or p == "" then return nil, "no path" end
+        local side = string.match(p, "^([^/]+)/")
+        if side == nil then return nil, "path must start with a drive side: " .. p end
+        local rest = string.sub(p, #side + 2)
+        if rest == "" then return nil, "no path inside the drive" end
+        if rest:find("..", 1, true) then return nil, "no parent paths" end
+        local rec = nil
+        local list = opts.provider and opts.provider() or {}
+        for i = 1, #list do if list[i].side == side then rec = list[i] break end end
+        if not rec then return nil, "no such drive here: " .. side end
+        if not rec.mount then return nil, side .. " has no mounted disk" end
+        return rec.mount .. "/" .. rest, nil
+    end
+
     -- Handle one inbound message. Returns the messages to send back (possibly
     -- none); the caller does the rednet sending.
     function h.onMessage(m)
@@ -202,6 +311,63 @@ function serve(opts)
         end
         if m.t == "ping" or m.t == "query" then
             return hostsMsgs(h.computer, h.computer, list())
+        elseif m.t == "fstat" or m.t == "fread" or m.t == "fdir"
+               or m.t == "fwipe" or m.t == "fchunk" or m.t == "fdel" then
+            local out = {}
+            local function reply(extra)
+                local r = base(m.t, h.computer)
+                r.id, r.to, r.path = m.id, m.from, m.path
+                for k, v in pairs(extra or {}) do r[k] = v end
+                table.insert(out, r)
+            end
+            local full, why = h.resolve(m.path)
+            if not full then
+                reply({ ok = false, msg = why })
+                return out
+            end
+            if m.t == "fstat" then
+                local info, e = readLines(full)
+                if not info then reply({ ok = false, msg = e })
+                else reply({ ok = true, size = info.size, lines = info.lines_n,
+                             sum = info.sum, trailing = info.trailing }) end
+            elseif m.t == "fread" then
+                local info, e = readLines(full)
+                if not info then reply({ ok = false, msg = e })
+                else reply({ ok = true, lines = info.lines, sum = info.sum,
+                             size = info.size, trailing = info.trailing }) end
+            elseif m.t == "fdir" then
+                local okL, names = pcall(fs.list, full)
+                if not okL then reply({ ok = false, msg = tostring(names) })
+                else reply({ ok = true, names = names }) end
+            elseif m.t == "fwipe" then
+                local okD, derr = pcall(fs.delete, full)
+                -- deleting first is the only way to truncate: mode "w" would do
+                -- it too, but a half-written file from a previous attempt is
+                -- worse than none
+                local parent = string.match(full, "^(.*)/[^/]+$") or full
+                if not (pcall(fs.exists, parent) and fs.exists(parent)) then
+                    pcall(fs.makeDir, parent)
+                end
+                local okO, handle = pcall(fs.open, full, "w")
+                if not okO or handle == nil then
+                    reply({ ok = false, msg = "cannot create " .. tostring(m.path)
+                            .. (okO and "" or (": " .. tostring(handle))) })
+                else pcall(handle.close); reply({ ok = true }) end
+            elseif m.t == "fchunk" then
+                local okA, msg = appendChunk(full, { i = m.i, part = m.part, sum = m.sum, last = m.last })
+                reply({ ok = okA, msg = msg })
+            elseif m.t == "fdel" then
+                -- deleting something that is not there is not a fault; saying
+                -- so keeps a cleanup pass from looking like a failure
+                local exists = (pcall(fs.exists, full)) and fs.exists(full)
+                if not exists then
+                    reply({ ok = true, msg = "nothing there" })
+                else
+                    local okD, derr = pcall(fs.delete, full)
+                    reply({ ok = okD, msg = okD and "deleted" or tostring(derr) })
+                end
+            end
+            return out
         elseif m.t == "act" then
             local ok, msg = false, "unknown action"
             if opts.act then ok, msg = opts.act(m.side, m.action, m.label, m.data) end

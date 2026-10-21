@@ -46,8 +46,11 @@ repairs them (capacity bars, single-click Eject, labels, degraded/duplicate
 reporting). Slice 3 runs: drives behind a **wired modem** join the same pool —
 run `diskarray_host.lua` on another computer and its drives appear as
 `#7:back` — and the array definition still lives on the floppies, because a
-remote disk is enrolled by asking its own host to write the manifest. No
-user-file striping or `put`/`get` yet. `DiskArray/README.md` holds the design,
+remote disk is enrolled by asking its own host to write the manifest. Files
+themselves cross the wire too: `put`/`get`/`ls` per array at `<mount>/files/`, in
+`plain` (one copy) or `mirror` (a copy per member, compared when read), with
+checksum-verified chunks. No `span`/`stripe` yet — those modes are refused rather
+than faked. `DiskArray/README.md` holds the design,
 the rednet protocol, and the 1.75 drive-peripheral and mount-path facts it is
 built on.
 

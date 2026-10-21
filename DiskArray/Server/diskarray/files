@@ -1,0 +1,297 @@
+-- ===========================================================================
+--  files   ->  global `files`
+-- ---------------------------------------------------------------------------
+--  put / get / ls across an array. A file lives at <mount>/files/<name> on each
+--  member that holds it, so a floppy pulled out of any computer still carries
+--  its own copy of everything the array put on it.
+--
+--  Layout modes:
+--    plain   one member (the one with the most room). A lost member loses the
+--            files it held - that is the honest meaning of "plain".
+--    mirror  every member that is present. A read compares the copies: if they
+--            disagree you are told, rather than being handed whichever one the
+--            scan happened to reach first.
+--
+--  Local members are written through fs directly. Remote ones go through the
+--  transport the entry program installs (files.setTransport) - this module
+--  never calls rednet itself, which is what makes the whole thing testable
+--  without a modem.
+--
+--  1.75 constraint that shapes all of this: fs.open(path,"r") gives ONLY
+--  readLine/readAll/close, and readAll drops newlines (FSAPI$1 in the jar). So
+--  text travels as a list of lines plus a `trailing` flag, rejoined with "\n".
+-- ===========================================================================
+
+local DIR = "files"
+
+local transport = nil
+
+function setTransport(fn) transport = (type(fn) == "function") and fn or nil end
+function hasTransport() return transport ~= nil end
+
+-- The path a HOST understands is "<side>/files/<name>" - the side name, not the
+-- pool key, because "#7:back" means nothing to computer 7.
+function pathFor(r, name)
+    return tostring(r.side) .. "/" .. DIR .. "/" .. tostring(name)
+end
+
+-- A listing asks for the folder itself, not "<folder>/" - the host hands the
+-- remainder straight to fs.list and a trailing slash is not worth betting on.
+function dirFor(r)
+    return tostring(r.side) .. "/" .. DIR
+end
+
+local function localPath(r, name)
+    return r.mount .. "/" .. DIR .. "/" .. tostring(name)
+end
+
+local function safeName(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if name:find("/", 1, true) or name:find("..", 1, true) then return nil end
+    if #name > 48 then return nil end
+    return name
+end
+
+-- Which array to work on: an id, or the one the UI is showing.
+local function membersOf(arrayID)
+    local a = pool.arraySummary(arrayID)
+    return a.members, a
+end
+
+---------------------------------------------------------------------------
+-- One member at a time
+---------------------------------------------------------------------------
+local function readMember(r, name)
+    if r.remote == true then
+        if transport == nil then return nil, "no network route to " .. r.key end
+        local ok, rep = transport(r.computer, net.freadMsg(os.getComputerID(), r.computer, pathFor(r, name)))
+        if not ok or rep == nil then return nil, "no answer from " .. r.key end
+        if rep.ok ~= true then return nil, tostring(rep.msg) end
+        local text = table.concat(rep.lines or {}, "\n")
+        if rep.trailing then text = text .. "\n" end
+        if type(rep.sum) == "number" and rep.sum ~= net.checksum(table.concat(rep.lines or {}, "\n")) then
+            return nil, r.key .. ": the file failed its checksum on the way here"
+        end
+        return text, nil, { size = rep.size, sum = rep.sum }
+    end
+    local info, err = net.readLines(localPath(r, name))
+    if not info then return nil, err end
+    local text = info.text
+    if info.trailing then text = text .. "\n" end
+    return text, nil, { size = info.size, sum = info.sum }
+end
+
+local function writeMember(r, name, text)
+    if r.readOnly == true then return false, r.key .. " is read-only" end
+    if not r.mount then return false, r.key .. " has no mounted disk" end
+    if r.remote == true then
+        if transport == nil then return false, "no network route to " .. r.key end
+        local me = os.getComputerID()
+        local ok, rep = transport(r.computer, net.fwipeMsg(me, r.computer, pathFor(r, name)))
+        if not ok or rep == nil then return false, "no answer from " .. r.key end
+        if rep.ok ~= true then return false, tostring(rep.msg) end
+        local pieces = net.chunk(text, 400)
+        local off, fail = 0, nil
+        for i = 1, #pieces do
+            pieces[i].off = off
+            local okC, repC = transport(r.computer, net.fchunkMsg(me, r.computer, pathFor(r, name), pieces[i]))
+            if not okC or repC == nil then fail = "no answer from " .. r.key break end
+            if repC.ok ~= true then fail = r.key .. ": " .. tostring(repC.msg) break end
+            off = off + #pieces[i].part
+        end
+        if fail then
+            -- fwipe already created the file, so a failed transfer would leave
+            -- an empty (or half-written) one behind. Delete it: a file that
+            -- exists but is wrong is worse than one that is missing.
+            pcall(function() transport(r.computer, net.fdelMsg(me, r.computer, pathFor(r, name))) end)
+            return false, fail .. " (cleaned up)"
+        end
+        return true, "wrote " .. #text .. " bytes to " .. r.key
+    end
+    local dir = r.mount .. "/" .. DIR
+    pcall(fs.makeDir, dir)
+    local path = dir .. "/" .. name
+    local ok, handle = pcall(fs.open, path, "w")
+    if not ok then return false, tostring(handle) end
+    if handle == nil then return false, "cannot open " .. r.key .. " for writing" end
+    local okW, werr = pcall(handle.write, text)
+    pcall(handle.flush)
+    pcall(handle.close)
+    if not okW then
+        pcall(fs.delete, path)   -- do not leave a truncated file behind
+        return false, tostring(werr)
+    end
+    return true, "wrote " .. #text .. " bytes to " .. r.key
+end
+
+---------------------------------------------------------------------------
+-- ls: every file in the array, and who holds it
+---------------------------------------------------------------------------
+function ls(arrayID)
+    local members, a = membersOf(arrayID)
+    local out, byName = {}, {}
+    for i = 1, #members do
+        local r = members[i]
+        local names, err
+        if r.remote == true then
+            if transport == nil then err = "no route" else
+                local ok, rep = transport(r.computer, net.fdirMsg(os.getComputerID(), r.computer, dirFor(r)))
+                if ok and rep and rep.ok == true then names = rep.names
+                elseif rep and rep.msg and tostring(rep.msg):find("No such") == nil then
+                    err = tostring(rep.msg)
+                end
+            end
+        else
+            local okL, got = pcall(fs.list, r.mount .. "/" .. DIR)
+            if okL and type(got) == "table" then names = got
+            else
+                -- most members never had a file put on them; that is an empty
+                -- member, not a fault worth a row of its own
+                local why = tostring(got)
+                if why:find("No such file") == nil and why:find("No such directory") == nil then
+                    err = why
+                end
+            end
+        end
+        for j = 1, #(names or {}) do
+            local n = names[j]
+            local e = byName[n]
+            if not e then
+                e = { name = n, members = {}, sizes = {} }
+                byName[n] = e
+                table.insert(out, e)
+            end
+            table.insert(e.members, r.key)
+        end
+        if err then
+            local e = byName["(unreadable)"]
+            if not e then
+                e = { name = "(unreadable)", members = {}, sizes = {}, err = err }
+                byName["(unreadable)"] = e
+                table.insert(out, e)
+            end
+            table.insert(e.members, r.key)
+        end
+    end
+    table.sort(out, function(x, y) return x.name < y.name end)
+    return out, a
+end
+
+-- Which members hold a file, cheapest check first.
+function where(name, arrayID)
+    local members = membersOf(arrayID)
+    local out = {}
+    for i = 1, #members do
+        local r = members[i]
+        local text, err = readMember(r, name)
+        if text ~= nil then table.insert(out, { key = r.key, size = #text, sum = net.checksum(text) }) end
+    end
+    return out
+end
+
+---------------------------------------------------------------------------
+-- get: read it, and say whether the copies agree
+---------------------------------------------------------------------------
+function get(name, arrayID)
+    if not safeName(name) then return nil, "bad file name" end
+    local members, a = membersOf(arrayID)
+    if #members == 0 then return nil, "no array to read from" end
+    local best, seen, conflicts, errs = nil, 0, 0, {}
+    for i = 1, #members do
+        local r = members[i]
+        local text, err = readMember(r, name)
+        if text == nil then
+            -- "no such file" means the copy is simply not there; anything else
+        -- (no answer, no route, a failed checksum) is a real problem and the
+        -- user should hear about it rather than get a quiet "not in the array".
+        if err and not err:find("no such file") then
+            table.insert(errs, r.key .. ": " .. err)
+        end
+        else
+            seen = seen + 1
+            local sum = net.checksum(text)
+            if best == nil then
+                best = { text = text, sum = sum, from = { r.key } }
+            elseif best.sum == sum then
+                table.insert(best.from, r.key)
+            else
+                conflicts = conflicts + 1
+            end
+        end
+    end
+    if best == nil then
+        if #errs > 0 then return nil, table.concat(errs, "; ") end
+        return nil, "not in the array: " .. name
+    end
+    best.copies, best.conflicts = seen, conflicts
+    if conflicts > 0 then
+        best.why = conflicts .. " copy(ies) disagree with " .. best.from[1]
+    end
+    return best.text, best
+end
+
+---------------------------------------------------------------------------
+-- put: place it according to the array's mode
+---------------------------------------------------------------------------
+function put(name, text, arrayID)
+    local n = safeName(name)
+    if not n then return false, "bad file name (no / or .., 48 chars max)" end
+    if type(text) ~= "string" then return false, "nothing to write" end
+    local members, a = membersOf(arrayID)
+    if #members == 0 then return false, "no array to write to" end
+
+    local targets = {}
+    if a.mode == "mirror" then
+        for i = 1, #members do
+            if members[i].readOnly ~= true then table.insert(targets, members[i]) end
+        end
+        if #targets == 0 then return false, "every member of this array is read-only" end
+    else
+        -- plain: the member with the most room. Not the "best" choice in any
+        -- deep sense - just a rule that is the same every time, so a file does
+        -- not wander between disks between runs.
+        local best = nil
+        for i = 1, #members do
+            local r = members[i]
+            if r.readOnly ~= true and r.mount and type(r.free) == "number" then
+                if best == nil or r.free > best.free then best = r end
+            end
+        end
+        if best == nil then return false, "no writable member with known free space" end
+        table.insert(targets, best)
+    end
+
+    local wrote, failed = 0, {}
+    for i = 1, #targets do
+        local ok, msg = writeMember(targets[i], n, text)
+        if ok then wrote = wrote + 1 else table.insert(failed, msg) end
+    end
+    pool.scan()
+    if wrote == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
+    local msg = "wrote " .. n .. " (" .. #text .. " bytes) to " .. wrote .. " member(s)"
+    if #failed > 0 then msg = msg .. ", failed: " .. table.concat(failed, "; ") end
+    if a.mode ~= "mirror" then msg = msg .. "  [plain mode: only one copy exists]" end
+    return true, msg
+end
+
+function remove(name, arrayID)
+    if not safeName(name) then return false, "bad file name" end
+    local members = membersOf(arrayID)
+    local gone, failed = 0, {}
+    for i = 1, #members do
+        local r = members[i]
+        if r.remote == true then
+            if transport == nil then table.insert(failed, r.key .. ": no route") else
+                local ok, rep = transport(r.computer, net.fdelMsg(os.getComputerID(), r.computer, pathFor(r, name)))
+                if ok and rep and rep.ok == true then gone = gone + 1
+                else table.insert(failed, r.key .. ": " .. tostring(rep and rep.msg)) end
+            end
+        else
+            local okD, derr = pcall(fs.delete, localPath(r, name))
+            if okD then gone = gone + 1 else table.insert(failed, r.key .. ": " .. tostring(derr)) end
+        end
+    end
+    pool.scan()
+    if gone == 0 then return false, "removed nothing (" .. table.concat(failed, "; ") .. ")" end
+    return true, "removed " .. name .. " from " .. gone .. " member(s)"
+end

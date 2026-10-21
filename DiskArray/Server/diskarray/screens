@@ -413,10 +413,10 @@ local selKey     = nil         -- free drive selected on a list
 local selMember  = nil         -- member selected on the Repair tab
 local pendingName = nil        -- name for the array being built
 local pendingMode  = "plain"
-
 local BUILDER_TABS = { { id = "devices", label = "Devices" },
                        { id = "new",     label = "New" },
-                       { id = "repair",  label = "Repair" } }
+                       { id = "repair",  label = "Repair" },
+                       { id = "files",   label = "Files" } }
 
 local function sortedDrives()
     local out = {}
@@ -518,6 +518,142 @@ local function doClearPick(app)
     app.rebuild()
 end
 
+---------------------------------------------------------------------------
+-- Files tab: what the array actually holds, and who holds it
+---------------------------------------------------------------------------
+local selFile      = nil         -- file selected on the Files tab
+local armDelete    = nil         -- file name armed for the confirming click
+
+local function arrayLabel()
+    local a = pool.arraySummary(selArray)
+    if a.id == nil then return "no array selected" end
+    return tostring(a.name or a.id) .. "  (" .. tostring(a.id) .. ", " .. tostring(a.mode) .. ")"
+end
+
+local function fileItems(arrayID)
+    local out = {}
+    local entries = files.ls(arrayID)
+    local a = pool.arraySummary(arrayID)
+    for i = 1, #entries do
+        local e = entries[i]
+        local missing = (a.members and #a.members - #e.members) or 0
+        out[#out + 1] = {
+            name = e.name, members = e.members,
+            -- ARMED goes first: a 51-wide screen clips the end of the row, and
+            -- an armed delete that you cannot see is worse than one you can.
+            text = (armDelete == e.name and "! " or "  ") .. e.name
+                   .. " [" .. #e.members .. "/" .. (a.members and #a.members or 0) .. "]"
+                   .. (missing > 0 and "  not on every member" or ""),
+        }
+    end
+    return out
+end
+
+local function renderFileRow(s, x, y, w, it, idx, sel)
+    local bg = sel and theme.c("selection") or theme.c("panel")
+    local fg = sel and theme.c("onAccent") or theme.c("text")
+    widget.text(s, x + 1, y, widget.clip(it.text, w - 2), fg, bg)
+end
+
+local function nextArray(app)
+    local all = pool.arrays()
+    if #all == 0 then app.notify("no arrays on this network", "warn") return end
+    local at = 1
+    for i = 1, #all do if all[i].id == (selArray or all[1].id) then at = i break end end
+    selArray = all[(at % #all) + 1].id
+    selFile, armDelete = nil, nil
+    app.notify("showing " .. arrayLabel(), "dim")
+    app.rebuild()
+end
+
+local function doGetFile(app)
+    if not selFile then app.notify("select a file first", "warn") return end
+    local text, info = files.get(selFile, selArray)
+    if text == nil then
+        app.notify(tostring(info), "error")
+        app.rebuild()
+        return
+    end
+    -- Copy it onto THIS computer's disk: the one place a file can land without
+    -- asking a floppy to hold it.
+    pcall(fs.makeDir, "dcget")
+    local dest = fs.combine("dcget", selFile)
+    local okH, h = pcall(fs.open, dest, "w")
+    if not okH or h == nil then
+        app.notify("read it but could not save: " .. tostring(okH and "no handle" or h), "error")
+        app.rebuild()
+        return
+    end
+    local okW, werr = pcall(h.write, text)
+    pcall(h.flush)
+    pcall(h.close)
+    if not okW then app.notify("could not save: " .. tostring(werr), "error") app.rebuild() return end
+    local msg = "saved " .. selFile .. " (" .. #text .. " bytes) to /" .. dest
+    local style = "ok"
+    if info.conflicts and info.conflicts > 0 then
+        msg = msg .. "  WARNING: " .. tostring(info.why)
+        style = "warn"
+    end
+    app.notify(msg, style)
+    app.rebuild()
+end
+
+local function doDeleteFile(app)
+    if not selFile then app.notify("select a file first", "warn") return end
+    if armDelete ~= selFile then
+        -- deleting user data is not a single click, unlike ejecting a floppy
+        armDelete = selFile
+        app.notify("press Delete selected again to remove " .. selFile, "warn")
+        app.rebuild()
+        return
+    end
+    armDelete = nil
+    local ok, msg = files.remove(selFile, selArray)
+    app.notify(msg, ok and "ok" or "error")
+    selFile = nil
+    app.rebuild()
+end
+
+local function builderFiles(app, root, b, top, contentH)
+    local a = pool.arraySummary(selArray)
+    root:add(widgets.label({
+        x = b.x, y = top, w = b.w, h = 1,
+        value = "ARRAY  " .. arrayLabel(), role = "dim",
+    }))
+    if a.id == nil then
+        root:add(widgets.label({ x = b.x, y = top + 1, w = b.w, h = 1,
+                                 value = "no array on this network yet", role = "warn" }))
+        return
+    end
+    local listH = math.max(1, contentH - 3)
+    local lf = widgets.list({
+        x = b.x, y = top + 1, w = b.w, h = listH,
+        items = function() return fileItems(a.id) end,
+        render = renderFileRow,
+        empty = "(this array holds no files yet)",
+        onSelect = function(it)
+            selFile = it.name
+            armDelete = nil
+            app.notify("selected " .. it.name .. " - " .. #it.members .. " copy(ies)", "dim")
+            app.rebuild()
+        end,
+    })
+    root:add(lf)
+    app.defaultKey = lf
+    -- Enter in this field puts a short note into the array. Longer files go
+    -- through files.put from lua, where you can supply the text properly.
+    root:add(widgets.field({
+        x = b.x, y = top + listH + 2, w = b.w, h = 1,
+        placeholder = "type a short note, press enter to put it in the array",
+        onEnter = function(line)
+            local name = "note" .. tostring(math.floor(os.clock()))
+            local ok, msg = files.put(name, line, a.id)
+            app.notify(msg, ok and "ok" or "error")
+            app.rebuild()
+        end,
+    }))
+end
+
 local function registerBuilderActions(app)
     app.registerAction("create",   { label = "Create array", style = "primary",
                                      run = function() doCreate(app) end })
@@ -531,6 +667,12 @@ local function registerBuilderActions(app)
                                      run = function() doAddFree(app) end })
     app.registerAction("clearpick",{ label = "Clear", style = "normal",
                                      run = function() doClearPick(app) end })
+    app.registerAction("nextarr",  { label = "Next array", style = "normal",
+                                     run = function() nextArray(app) end })
+    app.registerAction("getfile",  { label = "Get selected", style = "primary",
+                                     run = function() doGetFile(app) end })
+    app.registerAction("delfile",  { label = "Delete selected", style = "danger",
+                                     run = function() doDeleteFile(app) end })
     app.registerAction("ping",     { label = "Ping hosts", style = "normal",
                                      run = function() doPing(app) end })
 end
@@ -817,6 +959,8 @@ local function builderButtons()
         return { "rescan", "ping", "addfree", "clearpick" }
     elseif builderTab == "new" then
         return { "create", "addfree", "clearpick" }
+    elseif builderTab == "files" then
+        return { "getfile", "delfile", "nextarr", "rescan" }
     end
     return { "join", "forgetm", "rename", "rescan" }
 end
@@ -840,6 +984,8 @@ local function buildBuilder(app, root)
         builderDevices(app, root, b, top, contentH)
     elseif builderTab == "new" then
         builderNew(app, root, b, top, contentH)
+    elseif builderTab == "files" then
+        builderFiles(app, root, b, top, contentH)
     else
         builderRepair(app, root, b, top, contentH)
     end

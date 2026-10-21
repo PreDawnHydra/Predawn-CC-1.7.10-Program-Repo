@@ -22,8 +22,8 @@ function modes()
     return {
         { id = "plain",  label = "plain",  ready = true,
           note = "each member holds its own files; one lost member loses only its own files" },
-        { id = "mirror", label = "mirror", ready = false,
-          note = "every file written to every member - survives a disk dying (not written yet)" },
+        { id = "mirror", label = "mirror", ready = true,
+          note = "every file is written to every member - a disk can die and nothing is lost" },
         { id = "span",   label = "span",   ready = false,
           note = "one volume striped across the members (not written yet)" },
     }
@@ -154,7 +154,11 @@ function plan(keys, opts)
         end
         if not arrayID then arrayID = "(new array)" end
         local slots = pool.planSlots(arrayID, p.keys)
-        p.array = (arrayID == "(new array)") and nil or arrayID
+        -- NOTE: `cond and nil or x` never yields nil in Lua, so the obvious
+        -- spelling here silently handed the "(new array)" placeholder to
+        -- initArray as a real id - every array the Builder made was called
+        -- "(new array)" and would have merged on join.
+        if arrayID == "(new array)" then p.array = nil else p.array = arrayID end
         for i = 1, #slots do
             local r = pool.get(slots[i].key)
             local where = r.computer and ("host #" .. r.computer) or "local"

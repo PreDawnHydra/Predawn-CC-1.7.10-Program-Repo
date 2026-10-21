@@ -137,6 +137,53 @@ sweep the drives. That is the next thing this slice would grow.
 `.diskarray` is a dotfile, so `ls` will not show it — `type .diskarray` from the
 shell, or `fs.list()` from `lua`, will.
 
+## Files: put, get, ls
+
+The Builder has a fourth sub-screen, **Files**. It lists what the array holds and
+which members hold it:
+
+```
+ARRAY  SYMPHONY  (DA8.1792, mirror)
+  symphony.txt  [8/8]
+  note17         [1/8]   not on every member
+```
+
+* Click a file to select it. `Get selected` copies it onto **this computer** at
+  `/dcget/<name>`; `Next array` cycles through every array on the network.
+* `Delete selected` is **two clicks** — the first arms (the row gets a `!` and the
+  note says so), the second removes it from every member. Deleting user data is
+  not a single click, unlike ejecting a floppy.
+* Type a short note in the field and press enter to put a small file in. Anything
+  longer goes through `files.put(name, text, arrayID)` from `lua`.
+
+A file lives at **`<mount>/files/<name>`** on each member that holds it, so a
+floppy pulled out of any computer still carries its own copy of everything the
+array put on it. That is also why `files` never touches rednet itself: it takes a
+transport (`files.setTransport`) which the server entry fills in with a
+request/answer round trip, and the *host* is the only thing that touches its own
+filesystem. Paths on the wire are `"<side>/files/<name>"` — the side name, because
+`#7:back` means nothing to computer 7.
+
+**Layout modes**
+
+| mode | what a put does | a member dies |
+|---|---|---|
+| `plain` | written to the member with the most free space | you lose the files on that member |
+| `mirror` | written to **every** member that is present | nothing is lost |
+| `span` | not implemented — the Builder refuses it rather than pretending | — |
+
+A `mirror` read compares the copies. If one disk holds different bytes you are
+told (`1 copy(ies) disagree with #77:top`) and given a readable copy, rather than
+whichever one the scan happened to reach first.
+
+**Why a transfer cannot silently corrupt.** 1.75's `fs.open(path,"r")` gives only
+`readLine`/`readAll`/`close`, and `readAll` drops newlines, so a file travels as a
+list of lines plus a `trailing` flag and is rejoined with `\n`. Writes go
+`fwipe` (truncate, creating the folder first) then `fchunk` pieces of 400
+characters, each carrying a 31-bit checksum that the **host** verifies before it
+writes. A bad piece is refused, the partial file is deleted, and the failure is
+reported — a file that exists but is wrong is worse than one that is missing.
+
 ## What the screens show
 
 - **Overview** — the array rows first (array, members present/expected, state,
@@ -219,7 +266,9 @@ notes going to the title bar, a Rescan refreshing the view in place, capacity
 bars that render their caption instead of a closure, and a drive disappearing
 mid-session. The network half runs both ends of the protocol in one Lua state:
 chunking and its checksums (a corrupted or missing piece is refused, never
-passed through), batching a 25-drive host into three messages and reassembling
+passed through), file reads and writes through a real host object (`fstat`,
+`fread`, `fwipe`+`fchunk`, `fdir`, `fdel`), and a `put` whose chunk is corrupted
+en route leaving **no** half-written file behind, batching a 25-drive host into three messages and reassembling
 them, orders getting an ack plus a fresh drive list, a foreign protocol version
 refused, and a silent host dropped out of the pool. The Builder half covers the
 rules (read-only refused, mirror mode refused until it writes anything, a member

@@ -1,11 +1,14 @@
 # DiskArray
 
-**Status: slice 2 runs.** The server finds the Disk Drives, shows a clickable pool
-(totals plus a capacity bar per drive) on the computer screen or a monitor, and
-now knows the **array**: each member floppy carries a `.diskarray` manifest, and
-the UI reports the array id, its members, and whether it is whole, degraded or
-has a duplicated member. Still no user-file striping/mirroring and no rednet;
-the rest of this file is the design those steps will implement.
+**Status: slice 4 runs.** The server finds the Disk Drives — its own and other
+computers' over a **wired modem** — shows a clickable pool (totals plus a capacity
+bar per drive) on the computer screen or a monitor, and knows the **array**: each
+member floppy carries a `.diskarray` manifest, the Builder creates/repairs arrays
+disk by disk instead of sweeping every drive, and **files now cross the wire** —
+`put` / `get` / `ls` per array, `plain` (one copy) and `mirror` (one per member,
+compared on read). Still no `span`/`stripe`: the Builder refuses those modes
+rather than pretending. The rest of this file is the design those steps will
+implement.
 
 Several **Disk Drives** on one computer, presented as a single volume ("the array"),
 and served over **rednet** so other computers can read and write floppies without
@@ -69,7 +72,9 @@ before tuning it up.
 ## Running it in game (slice 1)
 
 **Hardware.** One computer with 1-4 Disk Drives attached to any sides. A monitor
-is optional. No modem is needed until the rednet slice exists. Floppies: any
+is optional. A modem turns the array into a network one: run
+`diskarray_host.lua` on any computer with drives and its drives join the pool.
+Floppies: any
 CC-formatted floppy mounts; a raw floppy mounts read-only.
 
 **Get the files.** From a computer that already has `git`:
@@ -223,12 +228,14 @@ to. Note `.diskarray` is invisible to `ls` (the ROM `list` skips dotfiles) but
 real to `fs.*`.
 
 **Layout modes.**
-- `mirror` — every chunk written to every member. Capacity = smallest disk.
-  Survives any one disk dying. Default.
+- `mirror` (done) — every file written to every member. Capacity = smallest disk.
+  Survives any one disk dying. A read compares the copies and reports a
+  disagreement instead of quietly picking one.
 - `stripe` — chunks round-robin across members. Capacity = sum of members.
   Losing one disk loses the whole volume.
 - `span` — members concatenated in slot order. Capacity = sum, and one lost disk
-  loses only the files that lived on it.
+  loses only the files that lived on it. Not implemented; `files.put` and the
+  Builder both refuse it.
 
 **Chunking.** Files are split into fixed-size chunks; each chunk carries a 31-bit
 rolling checksum (`h = (h*31 + byte) % 2147483647`, the same trick `git.lua` uses,
@@ -290,8 +297,13 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
 3. **Done (slice 3):** the Array Builder (Devices / New / Repair), multi-array
    support, join/leave/rename, and drives behind a wired modem through
    `diskarray_host.lua` and the `diskarray` rednet protocol.
-4. Chunked file transfer over that protocol, then `put` / `get` / `ls` and
-   `mirror` mode — the first thing that needs bytes to cross the modem.
+4. **Done (slice 4):** chunked file transfer over that protocol (`fwipe` +
+   checksum-verified 400-char chunks, plus `fstat`/`fread`/`fdir`/`fdel`),
+   `put` / `get` / `ls` across an array in `diskarray/files`, `mirror` mode, and
+   the Builder's **Files** sub-screen (Get to `/dcget`, two-click Delete,
+   Next array).
+5. `span` / `stripe` modes: a chunk map on the manifest plus free-space-aware
+   placement, and a `Client/` program with the terminal UI.
 5. `Client/` program with the terminal UI.
 6. `stripe` and `span` modes.
 

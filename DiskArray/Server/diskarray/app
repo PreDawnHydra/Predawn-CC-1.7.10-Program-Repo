@@ -44,6 +44,9 @@ function create(opts)
         -- onEvent(event, p1, p2, p3, p4) sees EVERY event before the mapping
         -- below runs. Use it for hardware events (disk, disk_eject, ...).
         onEvent  = opts.onEvent,
+        -- The bottom status row is optional: with showStatusBar = false the
+        -- body spans to the last row and notes go to the title bar instead.
+        showStatusBar = opts.showStatusBar ~= false,
         -- press feedback and note lifetime
         pressed  = nil,
         noteAt   = 0,
@@ -182,10 +185,17 @@ function create(opts)
     -- Body region: right of the sidebar, below the title bar, above the status
     -- bar. The sidebar owns columns 1..menuW, with a one-cell border gutter at
     -- menuW+1, so content starts at menuW+2.
+    -- Body region: right of the sidebar, below the title bar, and down to the
+    -- last row (or one above it when the status bar is showing).
+    function a.bottomRow()
+        return a.h - (a.showStatusBar and 1 or 0)
+    end
+
     function a.body()
         local m = a.menuW
         return { x = m + 2, y = 2,
-                 w = math.max(a.w - m - 1, 1), h = math.max(a.h - 2, 1) }
+                 w = math.max(a.w - m - 1, 1),
+                 h = math.max(a.bottomRow() - 1, 1) }
     end
 
     -----------------------------------------------------------------------
@@ -204,7 +214,7 @@ function create(opts)
         end
         a.menuW = math.max(8, math.min(maxLabel + 3, math.max(8, math.floor(a.w / 3))))
         local m = widgets.menu({
-            x = 1, y = 2, w = a.menuW, h = math.max(a.h - 2, 1),
+            x = 1, y = 2, w = a.menuW, h = math.max(a.bottomRow() - 1, 1),
             items = items,
             current = a.current or (items[1] and items[1].id),
             onSelect = function(id)
@@ -220,18 +230,31 @@ function create(opts)
     -- size changes, so the geometry always matches the current width/height.
     function a.buildChrome()
         a.menuWidget = a.makeMenu()
-        a.statusWidget = widgets.statusbar({
-            x = 1, y = a.h, w = a.w, h = 1,
-            left  = function() return a.note end,
-            -- While a note is live it owns the whole row. Drawing the key hint
-            -- at the same time is what left a faint fragment of the note
-            -- sitting in the status bar after a click; the hint comes back when
-            -- the note expires.
-            right = function()
-                if a.note ~= "" then return "" end
-                return a.statusRightText and a.statusRightText() or ""
-            end,
-        })
+        if a.showStatusBar then
+            a.statusWidget = widgets.statusbar({
+                x = 1, y = a.h, w = a.w, h = 1,
+                left  = function() return a.note end,
+                -- While a note is live it owns the whole row. Drawing the key
+                -- hint at the same time is what left a faint fragment of the
+                -- note behind; the hint comes back when the note expires.
+                right = function()
+                    if a.note ~= "" then return "" end
+                    return a.statusRightText and a.statusRightText() or ""
+                end,
+            })
+        else
+            a.statusWidget = nil
+        end
+    end
+
+    -- What goes in the top-right corner: a live note wins, otherwise the
+    -- program's own status text. With no status bar this is the only place a
+    -- note (or an action failure) can be seen.
+    function a.titleRight()
+        if a.note ~= "" then return a.note end
+        local r = a.statusRight
+        if type(r) == "function" then r = r() end
+        return r or ""
     end
 
     function a.ensureSurface()
@@ -249,15 +272,14 @@ function create(opts)
         -- Title bar
         widget.fill(s, 1, 1, a.w, 1, theme.c("accent"))
         widget.text(s, 2, 1, widget.clip(a.title, a.w - 2), theme.c("onAccent"), theme.c("accent"))
-        local right = a.statusRight
-        if type(right) == "function" then right = right() end
+        local right = a.titleRight()
         if right and #right > 0 then
             widget.text(s, a.w - #right, 1, widget.clip(right, a.w - 2), theme.c("onAccent"), theme.c("accent"))
         end
         -- Sidebar, plus a one-cell gutter separating it from the content area.
         if a.menuWidget then a.menuWidget:drawAll(s) end
-        widget.fill(s, a.menuW + 1, 2, 1, math.max(a.h - 2, 1), theme.c("gutter"))
-        -- Status bar
+        widget.fill(s, a.menuW + 1, 2, 1, math.max(a.bottomRow() - 1, 1), theme.c("gutter"))
+        -- Status bar (only when the program asks for one)
         if a.statusWidget then a.statusWidget:drawAll(s) end
     end
 
@@ -269,6 +291,17 @@ function create(opts)
         widget.fill(s, 1, 1, a.w, a.h, theme.c("desktop"))
         if a.root then a.root:drawAll(s) end
         a.drawChrome()
+        -- The cursor belongs to the surface, not to a widget: left alone it
+        -- sits and blinks wherever the last draw wrote (bottom right), and the
+        -- chrome text runs after the body. Only a focused text field gets one.
+        local f = a.focus
+        if f ~= nil and f.kind == "field" and f.caretX then
+            s.setCursorBlink(true)
+            s.setCursorPos(f.caretX, f.caretY)
+        else
+            s.setCursorBlink(false)
+            s.setCursorPos(1, 1)
+        end
         s.setVisible(true)
         s.redraw()
     end

@@ -131,6 +131,28 @@ skipped and why. `Forget` removes one disk's manifest and leaves its files
 alone. The label field on the Drives screen sets the floppy's label (click, type,
 Enter).
 
+## UI behaviour
+
+- **No bottom bar.** The body runs to the last row of the screen — there is no
+  key-hint row and no `enter=open  tab=focus` legend. Feedback for an action
+  ("rescanned: 8 disk(s)", "labelled drive_right", or a failure) appears in the
+  **top-right of the title bar** for 8 seconds, then the pool status comes back.
+- **One click, every button.** A button lights while the mouse button is held and
+  goes back on release; a monitor touch has no release event, so the next redraw
+  clears it. A click never leaves focus sitting on the button.
+- **The cursor only appears where it means something.** The surface cursor is
+  switched off at the end of every frame and parked at 1,1; a focused text field
+  is the only thing that turns it on, and it sits on that field's caret. Left
+  alone it blinked in the bottom-right corner, wherever the last draw wrote.
+- **The view follows the data.** A Rescan, a `disk`/`disk_eject` event, an
+  auto-rescan or a rename rebuilds the screen, and the stat rows read the pool at
+  draw time — so the numbers never show an older scan until you switch screens.
+- **A drive is named `<side>: <floppy label>`** — in the Overview bars, the
+  Drives list and the drive panel. Never by mount path, which identifies nothing.
+- **Capacity bars** show as many drives as fit, and the panel says
+  `CAPACITY  3 of 8 shown` when it cuts the list short. The denominator is an
+  estimate (`free + used` from a bounded walk); a truncated walk is marked `~`.
+
 ## Design
 
 **Membership.** Each member floppy carries a manifest at `/disk*/.diskarray`

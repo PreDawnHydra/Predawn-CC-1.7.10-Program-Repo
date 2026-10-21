@@ -50,7 +50,7 @@ diskarray/screens     the Overview and Drives screens
 
 1. Put a CC-formatted floppy in each drive you want in the array.
 2. On the Overview screen, click **Init array**. Every writable mounted disk gets
-   a `.diskarray` manifest; the status bar names the array id and says which
+   a `.diskarray` manifest; the title bar names the array id and says which
    disks were skipped (a read-only floppy is skipped, and says so).
 3. The Overview now shows `array`, `members` (present/expected) and `state`.
    Pull a member out and the state becomes `degraded`, naming the missing slot.
@@ -64,16 +64,24 @@ shell, or `fs.list()` from `lua`, will.
 
 ## What the screens show
 
-- **Overview** — pool totals (drives, disks in, mounted, writable, free total,
-  smallest free, files, used) plus the array rows (array, members, state, and
-  missing slots / duplicates / disks-without-manifest / bad manifests when they
-  are not zero), and one capacity bar per drive showing its slot.
-- **Drives** — a clickable list; the detail panel shows side, mount path, label,
-  disk id, free, file count, and the manifest (slot + member id, or why there is
-  none). `Rescan` re-reads the drives, `Eject` ejects the disk in the selected
-  drive, `Forget` clears its manifest. Every button acts on a **single click**:
-  it lights up while the mouse button is held and goes back on release (a monitor
-  touch has no release event, so the next redraw clears it).
+- **Overview** — the array rows first (array, members present/expected, state,
+  and missing slots / duplicates / disks-without-manifest / bad manifests when
+  they are not zero), then the pool totals (drives, disks in, mounted, writable,
+  free total, smallest free, files, used), then one capacity bar per drive. If
+  the terminal is too short, rows are dropped from the **bottom** — the array
+  warnings survive, the totals are what give way — and the bars panel says
+  `CAPACITY  N of M shown` when it cannot show them all.
+- **Drives** — a clickable list; the detail panel opens with the drive's name
+  (`drive_right: MyFloppy`) and then mount, disk id, free, file count and the
+  manifest (slot + member id, or why there is none). `Rescan` re-reads the
+  drives, `Eject` ejects the disk in the selected drive, `Forget` clears its
+  manifest, and the field at the bottom sets the floppy label (click, type,
+  Enter — the cursor blinks there while the field has focus, and nowhere else).
+  Every button acts on a **single click**: it lights up while the mouse button is
+  held and goes back on release (a monitor touch has no release event, so the
+  next redraw clears it).
+- **No status bar.** The body spans the whole screen. An action's note appears in
+  the top-right of the title bar for 8 seconds, then the pool status returns.
 
 **Free space is live and follows the server config.** `fs.getFreeSpace` answers
 with the mount's configured limit minus what it holds (`FileMount`
@@ -114,8 +122,11 @@ cd cc-dev/DiskArray/tests && timeout 120 node --max-old-space-size=1024 run.js 2
 Covers discovery, totals, the bounded walk (huge and deep trees), read-only and
 blank drives, methods that raise, both screens drawing without tripping the Lua
 5.1 `string.format("%s", nil)` rule, `monitor_touch` and `mouse_click` argument
-order, single-click eject with press/release feedback, the status bar keeping the
-note clear of the hint, and a drive disappearing mid-session. The array half
+order, single-click eject with press/release feedback, the cursor being off
+except inside a focused field, the body spanning the screen with no status bar,
+notes going to the title bar, a Rescan refreshing the view in place, capacity
+bars that render their caption instead of a closure, and a drive disappearing
+mid-session. The array half
 covers manifest round-trips, re-init keeping the array id, garbage / foreign
 version / oversized manifests being refused rather than evaluated, degraded and
 duplicate detection, Forget, and the label path.

@@ -25,12 +25,22 @@ local function keepSelection()
     if selectedSide and not pool.get(selectedSide) then selectedSide = nil end
 end
 
+-- How a drive is named in the UI: its floppy label, or a clear placeholder when
+-- the floppy has none. Never the mount path - that says nothing to a player.
+local function driveName(d)
+    if d.label ~= nil and d.label ~= "" then return d.label end
+    return "(no label)"
+end
+
 ---------------------------------------------------------------------------
 -- Shared actions
 ---------------------------------------------------------------------------
 local function doRescan(app)
     pool.scan()
     keepSelection()
+    -- Rebuild so the view follows the scan: which drives exist, and which
+    -- conditional rows apply, is decided when the screen is built.
+    app.rebuild()
     app.notify("rescanned: " .. pool.lastScanNote(), "dim")
 end
 
@@ -44,12 +54,14 @@ local function doEject(app)
     local ok, msg = pool.eject(d.side)
     keepSelection()
     app.notify(msg, ok and "ok" or "error")
+    app.rebuild()
 end
 
 local function doInit(app)
     local ok, msg = pool.initArray("plain")
     keepSelection()
     app.notify(msg, ok and "ok" or "error")
+    app.rebuild()
 end
 
 -- Take one disk out of the array: removes its manifest, leaves the files alone.
@@ -61,6 +73,7 @@ local function doForget(app)
     local ok, msg = pool.clearManifest(d.side)
     keepSelection()
     app.notify(msg, ok and "ok" or "error")
+    app.rebuild()
 end
 
 local function registerActions(app)
@@ -112,48 +125,75 @@ end
 ---------------------------------------------------------------------------
 local function buildOverview(app, root)
     local b = app.body()
-    local s = pool.summary()
-    local a2 = pool.arraySummary()
+    -- Values are read when a row is DRAWN, not when the screen is built. They
+    -- were built once before, which is why a Rescan left the numbers stale until
+    -- the player switched screens. summary() and arraySummary() only walk a
+    -- handful of drives, so calling them per row costs nothing.
+    local function S() return pool.summary() end
+    local function A() return pool.arraySummary() end
 
-    local rows = {
-        { "drives",    tostring(s.drives), function() return s.drives > 0 and "text" or "warn" end },
-        { "disks in",  tostring(s.disks),  "text" },
-        { "mounted",   tostring(s.data),   "text" },
-        { "writable",  tostring(s.writable),
-          function() return s.writable > 0 and "ok" or "warn" end },
-        { "free total", pool.bytes(s.totalFree), "ok" },
+    local rows = {}
+    -- Array identity first: if the terminal is too short to show everything, the
+    -- rows that get dropped are the pool totals at the bottom, never the
+    -- warnings about the array itself.
+    local head = {
+        { "array",     function() return A().id or "not initialised" end,
+          function() return A().id and "text" or "warn" end },
+        { "members",   function()
+              local a2 = A()
+              return a2.id and (a2.present .. "/" .. a2.expected) or "-"
+          end,
+          function()
+              local a2 = A()
+              return (a2.id and #a2.missing == 0) and "ok" or "error"
+          end },
+        { "state",     function()
+              local a2 = A()
+              return a2.state .. (a2.mode and (" (" .. a2.mode .. ")") or "")
+          end,
+          function()
+              local st = A().state
+              return st == "ok" and "ok" or (st == "none" and "dim" or "error")
+          end },
+    }
+    local tail = {
+        { "drives", function() return tostring(S().drives) end,
+          function() return S().drives > 0 and "text" or "warn" end },
+        { "disks in",  function() return tostring(S().disks) end, "text" },
+        { "mounted",   function() return tostring(S().data) end, "text" },
+        { "writable",  function() return tostring(S().writable) end,
+          function() return S().writable > 0 and "ok" or "warn" end },
+        { "free total", function() return pool.bytes(S().totalFree) end, "ok" },
         { "smallest free", function()
-              return s.minFree == nil and "?" .. " (" .. s.unknownFree .. " unreadable)"
-                                        or pool.bytes(s.minFree)
-          end, function() return (s.minFree or 0) > 0 and "text" or "error" end },
-        { "files",     tostring(s.files), "dim" },
-        { "used (files)", pool.bytes(s.used), "dim" },
-        { "array",     a2.id or "not initialised",
-          function() return a2.id and "text" or "warn" end },
-        { "members",   a2.id and (a2.present .. "/" .. a2.expected) or "-",
-          function() return (a2.id and #a2.missing == 0) and "ok" or "error" end },
-        { "state",     a2.state .. (a2.mode and (" (" .. a2.mode .. ")") or ""),
-          function() return a2.state == "ok" and "ok"
-                              or (a2.state == "none" and "dim" or "error") end },
-        { "last scan", math.floor(pool.age()) .. "s ago: " .. pool.lastScanNote(), "dim" },
+              local s = S()
+              return s.minFree == nil and "? (" .. s.unknownFree .. " unreadable)" or pool.bytes(s.minFree)
+          end,
+          function() return (S().minFree or 0) > 0 and "text" or "error" end },
+        { "files",     function() return tostring(S().files) end, "dim" },
+        { "used (files)", function() return pool.bytes(S().used) end, "dim" },
+        { "last scan", function() return math.floor(pool.age()) .. "s ago: " .. pool.lastScanNote() end, "dim" },
     }
 
-    -- Only shown when they are not zero, so a healthy array stays readable.
+    -- Whether these rows exist at all is decided when the screen is built (a
+    -- rebuild follows the scan); their contents stay live.
+    local a2 = pool.arraySummary()
     if #a2.missing > 0 then
-        table.insert(rows, { "missing slots", table.concat(a2.missing, ","), "error" })
+        table.insert(head, { "missing slots", function() return table.concat(A().missing, ",") end, "error" })
     end
     if a2.dupes > 0 then
-        table.insert(rows, { "duplicate members", tostring(a2.dupes), "warn" })
+        table.insert(head, { "duplicate members", function() return tostring(A().dupes) end, "warn" })
     end
     if a2.unmanifested > 0 then
-        table.insert(rows, { "disks no manifest", tostring(a2.unmanifested), "warn" })
+        table.insert(head, { "disks no manifest", function() return tostring(A().unmanifested) end, "warn" })
     end
     if a2.unreadable > 0 then
-        table.insert(rows, { "bad manifests", tostring(a2.unreadable), "error" })
+        table.insert(head, { "bad manifests", function() return tostring(A().unreadable) end, "error" })
     end
     if a2.arrays > 1 then
-        table.insert(rows, { "other arrays", tostring(a2.arrays - 1), "warn" })
+        table.insert(head, { "other arrays", function() return tostring(A().arrays - 1) end, "warn" })
     end
+    for i = 1, #head do table.insert(rows, head[i]) end
+    for i = 1, #tail do table.insert(rows, tail[i]) end
 
     local cols = (b.w >= 46) and 2 or 1
     local colW = math.floor((b.w - 2 - (cols - 1)) / cols)
@@ -165,10 +205,17 @@ local function buildOverview(app, root)
     -- the bottom until the capacity panel and the buttons fit.
     local function rowsHeight(n) return math.ceil(n / cols) + 2 end
     local buttonY = b.y + b.h - 1
-    local barsH = math.min(math.max(#pool.drives(), 0) * 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
+    local barsH = math.min(math.max(#pool.drives(), 0) * 2 + 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
     while #rows > 4 and rowsHeight(#rows) + barsH + 2 > b.h do
         table.remove(rows)
-        barsH = math.min(math.max(#pool.drives(), 0) * 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
+        barsH = math.min(math.max(#pool.drives(), 0) * 2 + 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
+    end
+    -- The bars are the point of this screen, so if they would not fit at all,
+    -- give up stat rows for them rather than drawing an empty panel. A bar
+    -- needs two rows plus the panel borders, hence the floor of 4.
+    while #rows > 8 and barsH < 4 do
+        table.remove(rows)
+        barsH = math.min(math.max(#pool.drives(), 0) * 2 + 2, math.max(b.h - rowsHeight(#rows) - 3, 0))
     end
 
     local infoH = rowsHeight(#rows)
@@ -193,9 +240,12 @@ local function buildOverview(app, root)
     -- labelled "~" instead of pretending to be exact.
     local barsY = b.y + infoH + 1
     local drives = pool.drives()
-    if #drives > 0 and barsH >= 2 then
-        root:add(widgets.panel({ x = b.x, y = barsY, w = b.w, h = barsH, title = "CAPACITY" }))
+    if #drives > 0 and barsH >= 4 then
         local shown = math.min(#drives, math.floor((barsH - 2) / 2))
+        -- Say when the list is cut short, rather than letting a few bars pass
+        -- for the whole pool.
+        local capTitle = (shown < #drives) and ("CAPACITY  " .. shown .. " of " .. #drives .. " shown") or "CAPACITY"
+        root:add(widgets.panel({ x = b.x, y = barsY, w = b.w, h = barsH, title = capTitle }))
         for i = 1, shown do
             local d = drives[i]
             local y = barsY + 1 + (i - 1) * 2
@@ -219,8 +269,10 @@ local function buildOverview(app, root)
                     local mark = cur.truncated and "~" or ""
                     local state = cur.mount and (cur.readOnly and "read-only" or "writable") or "no data"
                     local slot = cur.slot and ("  slot " .. tostring(cur.slot)) or ""
-                    return string.format("%s %s %s  %s free of %s%s%s",
-                        d.side, tostring(cur.mount or "-"), state,
+                    -- "side: label" first, the way the drive is named in the
+                    -- Drives panel; the mount path is in the panel, not here.
+                    return string.format("%s: %s  %s  %s free of %s%s%s",
+                        d.side, driveName(cur), state,
                         pool.bytes(cur.free), pool.bytes((cur.used or 0) + (cur.free or 0)), mark, slot)
                 end,
             }))
@@ -229,7 +281,11 @@ local function buildOverview(app, root)
         root:add(widgets.panel({ x = b.x, y = barsY, w = b.w, h = math.max(barsH, 3), title = "CAPACITY" }))
         root:add(widgets.label({
             x = b.x + 2, y = barsY + 1, w = b.w - 4,
-            value = "(no drive peripherals on this computer - attach a Disk Drive)",
+            -- Do not claim there are no drives when there simply is no room to
+            -- draw their bars.
+            value = (#drives == 0)
+                    and "(no drive peripherals on this computer - attach a Disk Drive)"
+                    or ("(" .. tostring(#drives) .. " drives: too little room for bars, see the Drives screen)"),
             role = "warn",
         }))
     end
@@ -254,7 +310,10 @@ local function renderDriveRow(s, x, y, w, d, idx, sel)
     end
     widget.text(s, x + 1, y, mark, theme.c(role), bg)
     local avail = math.max(w - 8, 8)
-    local rest = string.format(" %-9s %-7s %s", d.side, tostring(d.mount or "-"),
+    -- The floppy's own label if it has one, otherwise the mount path. Named the
+    -- same way as everywhere else: "<side>: <label>".
+    local name = (d.label ~= nil and d.label ~= "") and d.label or tostring(d.mount or "-")
+    local rest = string.format(" %-13s %-12s %s", d.side .. ":", name,
                                pool.bytes(d.free) .. " free")
     widget.text(s, x + 8, y, widget.clip(rest, avail),
         sel and theme.c("onAccent") or theme.c("text"), bg)
@@ -267,7 +326,7 @@ local function buildDrives(app, root)
     -- the list absorbs whatever height is left.
     local buttonY = b.y + b.h - 1
     local fieldY  = buttonY - 1
-    local detailH = 9
+    local detailH = 8
     local detailY = fieldY - detailH
     local listH = math.max(detailY - 1 - b.y, 1)
 
@@ -283,9 +342,14 @@ local function buildDrives(app, root)
 
     root:add(widgets.panel({ x = b.x, y = detailY, w = b.w, h = detailH, title = "DRIVE" }))
     local lines = {
-        { "side",     function() local d = selectedDrive(); return d and d.side or "(nothing selected)" end },
+        -- The drive's name, the same "<side>: <disk label>" the Overview bars
+        -- use, so a rename is visible right at the top of the panel.
+        { "name",     function()
+              local d = selectedDrive()
+              if not d then return "(nothing selected)" end
+              return d.side .. ": " .. driveName(d)
+          end },
         { "mount",    function() local d = selectedDrive(); return d and tostring(d.mount or "-") or "-" end },
-        { "label",    function() local d = selectedDrive(); return d and tostring(d.label or "-") or "-" end },
         { "disk id",  function() local d = selectedDrive(); return d and tostring(d.diskID or "-") or "-" end },
         { "free",     function() local d = selectedDrive(); return d and pool.bytes(d.free) or "-" end },
         { "files",    function()
@@ -320,6 +384,9 @@ local function buildDrives(app, root)
             local ok, msg = pool.setLabel(d.side, line)
             keepSelection()
             app.notify(msg, ok and "ok" or "error")
+            -- The name is shown in the panel and on the Overview bars, so redraw
+            -- both now rather than on the next rescan.
+            app.rebuild()
         end,
     }))
 

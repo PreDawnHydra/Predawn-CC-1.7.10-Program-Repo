@@ -130,11 +130,16 @@ local a = app.create({
     title   = "DISKARRAY  id " .. tostring(os.getComputerID()) ..
               (onMonitor and ("  mon:" .. tostring(monitorSide)) or ""),
     refresh = refresh,
+    -- No bottom status row: the body runs to the last row of the screen. Notes
+    -- (including failures) go to the top-right of the title bar instead, so a
+    -- click still says what it did without a bar under the UI.
+    showStatusBar = false,
 
     -- A floppy swap is an event, not something to poll for.
     onEvent = function(event)
         if pool.isPoolEvent(event) then
             pool.scan()
+            a.rebuild()
             a.notify("drive change: " .. pool.lastScanNote(), "dim")
         end
     end,
@@ -142,6 +147,9 @@ local a = app.create({
     onTick = function()
         if pool.age() >= rescanEvery then
             pool.scan()
+            -- Rebuild follows the scan, so the view never shows numbers from an
+            -- older scan for longer than one refresh.
+            a.rebuild()
         end
     end,
 })
@@ -151,9 +159,6 @@ a.statusRight     = function()
     return pool.count() .. " drives  " .. pool.bytes(pool.summary().totalFree)
         .. " free  " .. a2.state
 end
--- Kept short on purpose: the status bar clips the note to the room the hint
--- leaves, so a long hint would leave no room for "rescanned: ..." and friends.
-a.statusRightText = function() return "enter=open  tab=focus" end
 
 screens.build(a)
 

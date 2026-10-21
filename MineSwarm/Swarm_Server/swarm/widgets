@@ -419,7 +419,11 @@ function progress(opts)
         end
         widget.text(s, w.x + w.w - 1, w.y, "]", theme.c("border"), theme.c("panel"))
         if w.caption then
-            widget.text(s, w.x, w.y + 1, widget.clip(w.caption, w.w), theme.c("dim"), theme.c("panel"))
+            -- A caption may be a function so it can follow live data; calling it
+            -- here is what stops the widget printing "function: 0x...".
+            local c = w.caption
+            if type(c) == "function" then c = c() end
+            widget.text(s, w.x, w.y + 1, widget.clip(tostring(c or ""), w.w), theme.c("dim"), theme.c("panel"))
         end
     end
     return w
@@ -476,8 +480,13 @@ function field(opts)
         widget.text(s, w.x, w.y, ">", theme.c("borderHi"), theme.c("panel"))
         widget.text(s, w.x + 1, w.y, widget.clip(show, w.w - 1), fg, theme.c("panel"))
         if w.focused then
+            -- Record where the caret belongs: the chrome is drawn after the
+            -- body, and every text call moves the surface cursor, so the app
+            -- has to put it back here once the frame is complete.
+            w.caretX = w.x + 1 + math.min(#w.buffer, w.w - 2)
+            w.caretY = w.y
             s.setCursorBlink(true)
-            s.setCursorPos(w.x + 1 + math.min(#w.buffer, w.w - 2), w.y)
+            s.setCursorPos(w.caretX, w.caretY)
         end
     end
 

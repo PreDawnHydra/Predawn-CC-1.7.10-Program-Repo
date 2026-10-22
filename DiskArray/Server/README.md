@@ -172,15 +172,37 @@ filesystem. Paths on the wire are `"<side>/files/<name>"` — the side name, bec
 
 **Layout modes**
 
-| mode | what a put does | a member dies |
-|---|---|---|
-| `plain` | written to the member with the most free space | you lose the files on that member |
-| `mirror` | written to **every** member that is present | nothing is lost |
-| `span` | not implemented — the Builder refuses it rather than pretending | — |
+| mode | what a put does | a member dies | capacity shown |
+|---|---|---|---|
+| `plain` | written whole to the member with the most free space | you lose the files on that member | sum |
+| `mirror` | written whole to **every** member that is present | nothing is lost | smallest disk |
+| `span` | written in pieces, filling members in slot order | the files that sat on it are unreadable | sum |
+| `stripe` | written in fixed 800-byte pieces, round-robin across all members | **every** file is unreadable | sum |
 
-A `mirror` read compares the copies. If one disk holds different bytes you are
-told (`1 copy(ies) disagree with #77:top`) and given a readable copy, rather than
-whichever one the scan happened to reach first.
+A `mirror` read compares the copies against the index. If one disk holds
+different bytes you are told which member (`#77:top`) and handed the copy that
+matches — never whichever disk the scan reached first.
+
+**The pool index.** A spread file needs a map, so every member also carries
+`files/.dapool`: `{ id, files.<name> = { size, sum, layout, parts[] } }`, where a
+part is `{ key, side, computer, p, off, len, sum }`.
+
+- `layout = "copy"` (`plain`, `mirror`): every part is the **whole file**, under
+  the file's own name, so mirrored copies stay visible and editable from a shell.
+- `layout = "span" | "stripe"`: parts are sequential pieces named `name!1`,
+  `name!2` … The `!` is reserved in file names, and the browser lists the file
+  once (`long.txt [3 parts]`) instead of its pieces.
+- Each part and the whole file carry checksums. A reassembly that does not match
+  is reported, never passed off as the file.
+- The index records the pool that wrote it (`id`), so a floppy from another array
+  cannot answer for this one.
+- It is written to **every** member, so any one floppy in the pool says what the
+  pool holds. `files.ls` reads it; the disk scan only fills in files older than
+  the index.
+- A write that fails part-way is **rolled back**: a file whose parts are half
+  there is worse than no file.
+- `mirror` refuses when any member lacks room, rather than reporting a mirror
+  that is not one.
 
 **Why a transfer cannot silently corrupt.** 1.75's `fs.open(path,"r")` gives only
 `readLine`/`readAll`/`close`, and `readAll` drops newlines, so a file travels as a
@@ -213,8 +235,9 @@ reported — a file that exists but is wrong is worse than one that is missing.
     an array, `[x]` selected for a new one, `[ ]` usable, `[-]` refused — and a
     refused drive always says why. Buttons: `Rescan`, `Ping hosts`,
     `Add free disks`, `Clear`.
-  - **New**: mode strip (`plain` today; `mirror` and `span` are shown as *not
-    implemented* rather than offered as working buttons), an optional name, and
+  - **New**: mode strip — `plain`, `mirror`, `span`, `stripe` — with each mode's
+    trade-off written on the screen (mirror costs the smallest disk, stripe costs
+    resilience), an optional name, and
     the **plan** — the slot each disk would take, its free space, and whether it
     sits behind a modem. The plan comes from the same slot planner the write
     uses, so it cannot disagree with what happens next. Button: `Create array`.

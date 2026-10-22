@@ -549,14 +549,22 @@ local function fileItems(arrayID)
     local a = pool.arraySummary(arrayID)
     for i = 1, #entries do
         local e = entries[i]
-        local missing = (a.members and #a.members - #e.members) or 0
+        -- A copied file counts copies; a spanned or striped file counts parts.
+        -- Saying "[1/8]" for a file that is split over 3 disks would read as
+        -- "7 copies are missing", which is the opposite of the truth.
+        local tag
+        if (e.parts or 0) > 1 then
+            tag = " [" .. e.parts .. " parts]"
+        else
+            local missing = (a.members and #a.members - #e.members) or 0
+            tag = " [" .. #e.members .. "/" .. (a.members and #a.members or 0) .. "]"
+                .. (missing > 0 and "  not on every member" or "")
+        end
         out[#out + 1] = {
             name = e.name, members = e.members,
             -- ARMED goes first: a 51-wide screen clips the end of the row, and
             -- an armed delete that you cannot see is worse than one you can.
-            text = (armDelete == e.name and "! " or "  ") .. e.name
-                   .. " [" .. #e.members .. "/" .. (a.members and #a.members or 0) .. "]"
-                   .. (missing > 0 and "  not on every member" or ""),
+            text = (armDelete == e.name and "! " or "  ") .. e.name .. tag,
         }
     end
     return out
@@ -1147,7 +1155,7 @@ local function buildArrays(app, root)
         onSelect = function(it)
             selFile = it.name
             armDelete = nil
-            app.notify("selected " .. it.name .. " - " .. #it.members .. " copy(ies)", "dim")
+            app.notify("selected " .. it.name .. " - on " .. #it.members .. " member(s)", "dim")
             app.rebuild()
         end,
     })

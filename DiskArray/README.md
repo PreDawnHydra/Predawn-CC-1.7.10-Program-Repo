@@ -5,10 +5,12 @@ computers' over a **wired modem** — shows a clickable pool (totals plus a capa
 bar per drive) on the computer screen or a monitor, and knows the **array**: each
 member floppy carries a `.diskarray` manifest, the Builder creates/repairs arrays
 disk by disk instead of sweeping every drive, and **files now cross the wire** —
-`put` / `get` / `ls` per array, `plain` (one copy) and `mirror` (one per member,
-compared on read). Still no `span`/`stripe`: the Builder refuses those modes
-rather than pretending. The rest of this file is the design those steps will
-implement.
+`put` / `get` / `ls` per array, in four layout modes: `plain` (one copy),
+`mirror` (a copy on every member, verified on read), `span` (one volume, filled
+in slot order) and `stripe` (fixed pieces round-robin). A pool keeps a
+replicated index (`files/.dapool`) so a file split across disks can be put back
+together, and any one floppy can say what the pool holds. The rest of this file
+is the design those steps implement.
 
 Several **Disk Drives** on one computer, presented as a single volume ("the array"),
 and served over **rednet** so other computers can read and write floppies without
@@ -227,15 +229,26 @@ layout mode. A disk without a manifest is not in the array and is never written
 to. Note `.diskarray` is invisible to `ls` (the ROM `list` skips dotfiles) but
 real to `fs.*`.
 
-**Layout modes.**
-- `mirror` (done) — every file written to every member. Capacity = smallest disk.
-  Survives any one disk dying. A read compares the copies and reports a
-  disagreement instead of quietly picking one.
-- `stripe` — chunks round-robin across members. Capacity = sum of members.
-  Losing one disk loses the whole volume.
-- `span` — members concatenated in slot order. Capacity = sum, and one lost disk
-  loses only the files that lived on it. Not implemented; `files.put` and the
-  Builder both refuse it.
+**Layout modes** (all four are implemented; the Builder shows the trade-off
+before you pick one).
+
+| mode | a file is written… | if one member dies | capacity shown |
+|---|---|---|---|
+| `plain` | whole, to the member with the most room | only that member's files are lost | sum |
+| `mirror` | whole, to **every** member | nothing is lost; every copy is checksum-verified | smallest disk |
+| `span` | in pieces, filling members in slot order | the files that sat on that disk are unreadable | sum |
+| `stripe` | in fixed 800-byte pieces, round-robin | **every** file is unreadable | sum |
+
+Capacity is reported **per mode**: a 4 MB pool in `mirror` mode is a 1.44 MB
+pool, and the meter says so rather than flattering you.
+
+**The pool index** (`files/.dapool`, on every member) is what makes a split file
+puttable again: `{ id, files.<name> = { size, sum, layout, parts[] } }`. Parts
+carry checksums and the member they live on; `layout` says whether the parts are
+alternative whole copies (`plain`, `mirror`) or sequential pieces (`span`,
+`stripe`, named `name!1`, `name!2` …, with `!` reserved in file names). A write
+that fails part-way is rolled back, and a read that fails a checksum is reported
+instead of guessed.
 
 **Chunking.** Files are split into fixed-size chunks; each chunk carries a 31-bit
 rolling checksum (`h = (h*31 + byte) % 2147483647`, the same trick `git.lua` uses,
@@ -307,10 +320,11 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
    file browser moved out of the Builder), plus button fixes: labels size their
    own buttons so nothing reads `Get s`, and the press face is drawn before the
    action rebuilds the screen so a click actually looks like a click.
-6. `span` / `stripe` modes: a chunk map on the manifest plus free-space-aware
-   placement, and a `Client/` program with the terminal UI.
-5. `Client/` program with the terminal UI.
-6. `stripe` and `span` modes.
+6. **Done (slice 6):** `span` and `stripe` — a replicated pool index
+   (`files/.dapool`), free-space-aware placement, split files (`name!1`…),
+   checksummed parts, rollback of half-written files, and honest degraded-read
+   messages. Capacity per mode was already honest.
+7. `Client/` program with the terminal UI.
 
 ## Tests
 

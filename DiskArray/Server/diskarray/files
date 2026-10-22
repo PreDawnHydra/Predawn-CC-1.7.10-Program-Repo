@@ -58,6 +58,178 @@ local function membersOf(arrayID)
     return a.members, a
 end
 
+-- the member writers are defined further down; forward-declared so the index
+-- code above can use them
+local writeMember
+
+---------------------------------------------------------------------------
+-- The pool index
+--
+-- Everything a split file needs to be read back lives in .dapool, written to
+-- EVERY member of the pool. That is deliberate: pull any one floppy out and it
+-- still says what the pool held, where each part sat, and what checksum each
+-- part had. An index you cannot read without the whole pool is not an index.
+--
+-- It is read with the same care as a manifest: only a size-capped,
+-- brace-balanced slice goes to textutils.unserialize, because that function
+-- EVALUATES the text it is given.
+---------------------------------------------------------------------------
+local INDEX    = ".dapool"
+-- Room left on every member for the index itself and for growth. It scales with
+-- the disk: a fixed 4 KB would swallow a small floppy whole, so it is 1/8 of the
+-- free space capped at 4 KB.
+local RESERVE_MAX = 4096
+local STRIPE   = 800         -- bytes per part when striping
+local MAX_IDX  = 60000       -- a serialized index bigger than this is not written
+
+local function indexName(r) return INDEX end
+
+-- Members in slot order: span fills the pool like one contiguous volume, so the
+-- order has to be the pool's own, not whatever the scan happened to find first.
+local function ordered(a)
+    local out = {}
+    for i = 1, #a.members do out[#out + 1] = a.members[i] end
+    table.sort(out, function(x, y)
+        local sx, sy = tonumber(x.slot) or 999, tonumber(y.slot) or 999
+        if sx ~= sy then return sx < sy end
+        return tostring(x.key) < tostring(y.key)
+    end)
+    return out
+end
+
+local function quota(r)
+    local free = (type(r.free) == "number") and r.free or 0
+    local reserve = math.min(RESERVE_MAX, math.floor(free / 8))
+    local q = free - reserve
+    return q > 0 and q or 0
+end
+
+local function emptyIndex(a)
+    return { v = 1, id = a.id, mode = a.mode, files = {} }
+end
+
+local function indexRaw(r, arrayID)
+    if r.remote == true then
+        if transport == nil then return nil, "no route" end
+        local ok, rep = transport(r.computer, net.freadMsg(os.getComputerID(), r.computer,
+                                                           pathFor(r, INDEX)))
+        if not ok or rep == nil then return nil, "no answer" end
+        if rep.ok ~= true then return nil, tostring(rep.msg) end
+        local text = table.concat(rep.lines or {}, "\n")
+        if rep.trailing then text = text .. "\n" end
+        return text, nil
+    end
+    local info, err = net.readLines(localPath(r, INDEX))
+    if not info then return nil, err end
+    return info.text, nil
+end
+
+local function decodeIndex(text)
+    if type(text) ~= "string" or text == "" then return nil, "empty" end
+    if #text > MAX_IDX + 2000 then return nil, "index too big" end
+    local slice = string.match(text, "%b{}")
+    if not slice then return nil, "no table in it" end
+    local ok, t = pcall(textutils.unserialize, slice)
+    if not ok or type(t) ~= "table" then return nil, "not readable" end
+    if tonumber(t.v) ~= 1 or type(t.files) ~= "table" then return nil, "unknown index version" end
+    return t, nil
+end
+
+-- The first member that has a readable index wins. Members disagree only if
+-- something wrote one disk by hand, and the entry says so rather than merging
+-- two versions into nonsense.
+local function readIndex(a)
+    local mems = ordered(a)
+    for i = 1, #mems do
+        local raw, err = indexRaw(mems[i], a.id)
+        if raw then
+            local t, derr = decodeIndex(raw)
+            -- an index only describes the pool that wrote it. A floppy from
+            -- another array must not answer for this one.
+            if t and t.id == a.id then return t, mems[i].key end
+        end
+    end
+    return nil, "no readable index on any member"
+end
+
+local function syncIndex(a, idx)
+    idx.at = os.time()
+    idx.id, idx.mode = a.id, a.mode
+    local ok_, err_ = pcall(textutils.serialize, idx)
+    if not ok_ then return false, tostring(err_) end
+    local text = err_
+    if #text > MAX_IDX then
+        return false, "the pool index is " .. #text .. " bytes, too big to rewrite safely"
+    end
+    local wrote, failed = 0, {}
+    for i = 1, #a.members do
+        local r = a.members[i]
+        if r.readOnly ~= true then
+            local ok, msg = writeMember(r, INDEX, text)
+            if ok then wrote = wrote + 1 else failed[#failed + 1] = tostring(msg) end
+        end
+    end
+    if wrote == 0 then return false, "wrote the index nowhere (" .. table.concat(failed, "; ") .. ")" end
+    return true, "index on " .. wrote .. " member(s)" .. (#failed > 0 and (", failed: " .. table.concat(failed, "; ")) or "")
+end
+
+---------------------------------------------------------------------------
+-- Placement: how a file's bytes are spread over the members
+---------------------------------------------------------------------------
+-- span: fill the members in slot order, so the pool behaves as one
+-- contiguous volume. A file may straddle two members; if one of those dies the
+-- file is lost, but files that sat wholly on another member are untouched.
+local function placeSpan(a, text)
+    local mems = ordered(a)
+    if #mems == 0 then return nil, "no members to place it on" end
+    local parts, at = {}, 1
+    for i = 1, #mems do
+        local r = mems[i]
+        if r.readOnly ~= true and r.mount then
+            local room = quota(r)
+            if room > 0 and at <= #text then
+                local take = math.min(room, #text - at + 1)
+                parts[#parts + 1] = { r = r, off = at - 1, len = take,
+                                      text = string.sub(text, at, at + take - 1) }
+                at = at + take
+            end
+        end
+    end
+    if at <= #text then
+        return nil, "no room left in the pool: " .. (#text - at + 1) .. " byte(s) unplaced"
+    end
+    return parts
+end
+
+-- stripe: fixed pieces round-robin across the members. Every file touches
+-- every member, so one dead disk breaks every file - it exists to fill a pool
+-- evenly, not to survive anything.
+local function placeStripe(a, text)
+    local mems = ordered(a)
+    local usable = {}
+    for i = 1, #mems do
+        if mems[i].readOnly ~= true and mems[i].mount then usable[#usable + 1] = mems[i] end
+    end
+    if #usable == 0 then return nil, "no writable members to stripe across" end
+    local parts, used, at = {}, {}, 1
+    while at <= #text do
+        for i = 1, #usable do
+            local r = usable[i]
+            if at <= #text then
+                local take = math.min(STRIPE, #text - at + 1)
+                used[r.key] = (used[r.key] or 0) + take
+                if used[r.key] > quota(r) then
+                    return nil, r.key .. " has no room for its share (" .. quota(r) .. " bytes)"
+                end
+                parts[#parts + 1] = { r = r, off = at - 1, len = take,
+                                      text = string.sub(text, at, at + take - 1) }
+                at = at + take
+            end
+        end
+    end
+    return parts
+end
+
 ---------------------------------------------------------------------------
 -- One member at a time
 ---------------------------------------------------------------------------
@@ -81,7 +253,7 @@ local function readMember(r, name)
     return text, nil, { size = info.size, sum = info.sum }
 end
 
-local function writeMember(r, name, text)
+writeMember = function(r, name, text)
     if r.readOnly == true then return false, r.key .. " is read-only" end
     if not r.mount then return false, r.key .. " has no mounted disk" end
     if r.remote == true then
@@ -127,9 +299,71 @@ end
 ---------------------------------------------------------------------------
 -- ls: every file in the array, and who holds it
 ---------------------------------------------------------------------------
+---------------------------------------------------------------------------
+-- Helpers shared by the four operations
+---------------------------------------------------------------------------
+local function memberByKey(a, key)
+    for i = 1, #a.members do
+        if a.members[i].key == key then return a.members[i] end
+    end
+    return nil
+end
+
+local function deleteOn(r, name)
+    if r.remote == true then
+        if transport == nil then return false, "no route to " .. tostring(r.key) end
+        local ok, rep = transport(r.computer, net.fdelMsg(os.getComputerID(), r.computer, pathFor(r, name)))
+        if ok and rep and rep.ok == true then return true, "deleted" end
+        return false, tostring(rep and rep.msg or "no answer")
+    end
+    local okD, derr = pcall(fs.delete, localPath(r, name))
+    if okD then return true, "deleted" end
+    return false, tostring(derr)
+end
+
+local function removeParts(a, entries)
+    for i = 1, #(entries or {}) do
+        local e = entries[i]
+        local r = memberByKey(a, e.key)
+        if r then pcall(deleteOn, r, e.p) end
+    end
+end
+
+---------------------------------------------------------------------------
+-- ls: index first, then anything on disk the index never mentioned
+---------------------------------------------------------------------------
 function ls(arrayID)
     local members, a = membersOf(arrayID)
     local out, byName = {}, {}
+    local function add(name, mems, size, parts)
+        local e = byName[name]
+        if not e then
+            e = { name = name, members = {}, sizes = {} }
+            byName[name] = e
+            table.insert(out, e)
+        end
+        for i = 1, #mems do
+            if not e.seenKey or not e.seenKey[mems[i]] then
+                e.seenKey = e.seenKey or {}
+                e.seenKey[mems[i]] = true
+                table.insert(e.members, mems[i])
+            end
+        end
+        e.size, e.parts = size, parts
+    end
+
+    local idx = readIndex(a)
+    if idx then
+        for name, ent in pairs(idx.files) do
+            local mems = {}
+            for i = 1, #(ent.parts or {}) do mems[i] = ent.parts[i].key end
+            add(name, mems, ent.size, #(ent.parts or {}))
+        end
+    end
+
+    -- The scan catches files written before an index existed. A piece of a split
+    -- file (name!3) is not a file of its own, so it is skipped when the index
+    -- already describes the whole thing.
     for i = 1, #members do
         local r = members[i]
         local names, err
@@ -145,8 +379,6 @@ function ls(arrayID)
             local okL, got = pcall(fs.list, r.mount .. "/" .. DIR)
             if okL and type(got) == "table" then names = got
             else
-                -- most members never had a file put on them; that is an empty
-                -- member, not a fault worth a row of its own
                 local why = tostring(got)
                 if why:find("No such file") == nil and why:find("No such directory") == nil then
                     err = why
@@ -155,13 +387,9 @@ function ls(arrayID)
         end
         for j = 1, #(names or {}) do
             local n = names[j]
-            local e = byName[n]
-            if not e then
-                e = { name = n, members = {}, sizes = {} }
-                byName[n] = e
-                table.insert(out, e)
+            if n ~= INDEX and (n:find("!", 1, true) == nil or byName[n:match("^(.-)!")] == nil) then
+                add(n, { r.key }, nil, byName[n] and byName[n].parts or nil)
             end
-            table.insert(e.members, r.key)
         end
         if err then
             local e = byName["(unreadable)"]
@@ -177,36 +405,121 @@ function ls(arrayID)
     return out, a
 end
 
--- Which members hold a file, cheapest check first.
+-- Which members hold a file, and how much of it each one carries.
 function where(name, arrayID)
-    local members = membersOf(arrayID)
+    local members, a = membersOf(arrayID)
+    local idx = readIndex(a)
     local out = {}
+    if idx and idx.files[name] then
+        for i = 1, #(idx.files[name].parts or {}) do
+            local e = idx.files[name].parts[i]
+            out[#out + 1] = { key = e.key, size = e.len, sum = e.sum, part = e.p }
+        end
+        return out
+    end
     for i = 1, #members do
         local r = members[i]
         local text, err = readMember(r, name)
-        if text ~= nil then table.insert(out, { key = r.key, size = #text, sum = net.checksum(text) }) end
+        if text ~= nil then
+            out[#out + 1] = { key = r.key, size = #text, sum = net.checksum(text) }
+        end
     end
     return out
 end
 
 ---------------------------------------------------------------------------
--- get: read it, and say whether the copies agree
+-- get: reassemble from the index, or scan when there is no index
 ---------------------------------------------------------------------------
 function get(name, arrayID)
     if not safeName(name) then return nil, "bad file name" end
     local members, a = membersOf(arrayID)
     if #members == 0 then return nil, "no array to read from" end
+    local idx = readIndex(a)
+    if idx and idx.files[name] then
+        local ent = idx.files[name]
+        -- "copy" layouts (plain, mirror) hold the WHOLE file in each part: they
+        -- are alternatives, not pieces. Concatenating them would hand back the
+        -- text eight times over. Only span/stripe are read in sequence.
+        if ent.layout == "copy" then
+            local good, agree, wrong, gone = nil, 0, {}, {}
+            for i = 1, #(ent.parts or {}) do
+                local e = ent.parts[i]
+                local r = memberByKey(a, e.key)
+                if r == nil then
+                    wrong[#wrong + 1] = tostring(e.key) .. " is gone"
+                else
+                    local text, err = readMember(r, e.p)
+                    if text == nil then
+                        wrong[#wrong + 1] = tostring(e.key) .. " has no copy"
+                    elseif net.checksum(text) ~= ent.sum then
+                        wrong[#wrong + 1] = tostring(e.key)
+                    else
+                        agree = agree + 1
+                        if good == nil then good = text end
+                    end
+                end
+            end
+            if good == nil then
+                return nil, "no readable copy of " .. name .. ": " .. table.concat(wrong, ", ")
+            end
+            local info = { copies = agree, from = {}, size = #good, sum = ent.sum,
+                           conflicts = #wrong, parts = #(ent.parts or {}), indexed = true }
+            for i = 1, #(ent.parts or {}) do
+                local e = ent.parts[i]
+                local r = memberByKey(a, e.key)
+                if r ~= nil then info.from[#info.from + 1] = e.key end
+            end
+            if #wrong > 0 then
+                info.why = #wrong .. " member(s) disagree with the index: " .. table.concat(wrong, ", ")
+            end
+            return good, info
+        end
+        local pieces, missing, corrupt = {}, {}, {}
+        for i = 1, #(ent.parts or {}) do
+            local e = ent.parts[i]
+            local r = memberByKey(a, e.key)
+            if r == nil then
+                table.insert(missing, tostring(e.key))
+            else
+                local text, err = readMember(r, e.p)
+                if text == nil then
+                    table.insert(missing, tostring(e.key) .. " (" .. tostring(e.p) .. ")")
+                elseif type(e.sum) == "number" and net.checksum(text) ~= e.sum then
+                    table.insert(corrupt, tostring(e.key))
+                else
+                    pieces[i] = text
+                end
+            end
+        end
+        if #missing > 0 then
+            return nil, "part(s) are not present: " .. table.concat(missing, ", ")
+                .. "  - the pool is degraded, this file cannot be rebuilt"
+        end
+        if #corrupt > 0 then
+            return nil, "part(s) failed their checksum: " .. table.concat(corrupt, ", ")
+        end
+        local text = table.concat(pieces)
+        local info = { parts = #(ent.parts or {}), copies = #(ent.parts or {}),
+                       from = {}, size = #text, sum = ent.sum, conflicts = 0,
+                       indexed = true }
+        for i = 1, #(ent.parts or {}) do info.from[i] = ent.parts[i].key end
+        if type(ent.sum) == "number" and net.checksum(text) ~= ent.sum then
+            info.conflicts = 1
+            info.why = "the reassembled text does not match the checksum in the index"
+        end
+        return text, info
+    end
+
+    -- no index: the file predates it, or was written outside the pool. Compare
+    -- the copies, as before.
     local best, seen, conflicts, errs = nil, 0, 0, {}
     for i = 1, #members do
         local r = members[i]
         local text, err = readMember(r, name)
         if text == nil then
-            -- "no such file" means the copy is simply not there; anything else
-        -- (no answer, no route, a failed checksum) is a real problem and the
-        -- user should hear about it rather than get a quiet "not in the array".
-        if err and not err:find("no such file") then
-            table.insert(errs, r.key .. ": " .. err)
-        end
+            if err and not err:find("no such file") then
+                table.insert(errs, r.key .. ": " .. err)
+            end
         else
             seen = seen + 1
             local sum = net.checksum(text)
@@ -231,25 +544,52 @@ function get(name, arrayID)
 end
 
 ---------------------------------------------------------------------------
--- put: place it according to the array's mode
+-- put: place the bytes according to the array's mode, then write the index
 ---------------------------------------------------------------------------
 function put(name, text, arrayID)
     local n = safeName(name)
     if not n then return false, "bad file name (no / or .., 48 chars max)" end
+    if n == INDEX or n:find("!", 1, true) then
+        return false, "that name is reserved by the pool index"
+    end
     if type(text) ~= "string" then return false, "nothing to write" end
     local members, a = membersOf(arrayID)
     if #members == 0 then return false, "no array to write to" end
 
-    local targets = {}
-    if a.mode == "mirror" then
+    local idx = readIndex(a)
+    if not idx then idx = emptyIndex(a) end
+    -- an old version of this file goes first: a file that shrinks must not keep
+    -- a stale tail, and a file that changes part count must not keep extra parts
+    if idx.files[n] then removeParts(a, idx.files[n].parts) end
+
+    local parts, why
+    if a.mode == "span" then
+        parts, why = placeSpan(a, text)
+    elseif a.mode == "stripe" then
+        parts, why = placeStripe(a, text)
+    elseif a.mode == "mirror" then
+        -- Mirror means a copy on every member, so one member without room means
+        -- the promise cannot be kept: refuse rather than hand back a pool that is
+        -- quietly not mirrored.
+        parts = {}
+        local short = {}
         for i = 1, #members do
-            if members[i].readOnly ~= true then table.insert(targets, members[i]) end
+            local r = members[i]
+            if r.readOnly ~= true and r.mount then
+                if #text > quota(r) then
+                    short[#short + 1] = r.key .. " (" .. quota(r) .. " free of " .. #text .. ")"
+                else
+                    parts[#parts + 1] = { r = r, off = 0, len = #text, text = text }
+                end
+            end
         end
-        if #targets == 0 then return false, "every member of this array is read-only" end
+        if #short > 0 then
+            return false, "mirror needs room on every member: " .. table.concat(short, ", ")
+        end
+        if #parts == 0 then why = "every member of this array is read-only" end
     else
-        -- plain: the member with the most room. Not the "best" choice in any
-        -- deep sense - just a rule that is the same every time, so a file does
-        -- not wander between disks between runs.
+        -- plain: one member, the one with the most room. Not a "clever" choice -
+        -- a rule that is the same every time, so a file does not wander.
         local best = nil
         for i = 1, #members do
             local r = members[i]
@@ -257,39 +597,85 @@ function put(name, text, arrayID)
                 if best == nil or r.free > best.free then best = r end
             end
         end
-        if best == nil then return false, "no writable member with known free space" end
-        table.insert(targets, best)
+        if best == nil then
+            why = "no writable member with known free space"
+        elseif #text > quota(best) then
+            why = best.key .. " has only " .. quota(best) .. " usable bytes"
+        else
+            parts = { { r = best, off = 0, len = #text, text = text } }
+        end
+    end
+    if not parts then return false, why end
+
+    -- Piece names. Whether a file is split is decided by the LAYOUT, not by how
+    -- many parts there are: a mirrored file has one part per member and every
+    -- one of them is the whole file under the file's own name. Numbering those
+    -- would hide the copies from a shell, and from a corruption check.
+    local layout = (a.mode == "span" or a.mode == "stripe") and a.mode or "copy"
+    local split = (layout ~= "copy") and (#parts > 1)
+    local entries, wrote, failed = {}, 0, {}
+    for i = 1, #parts do
+        local p = parts[i]
+        local pname = split and (n .. "!" .. i) or n
+        local ok, msg = writeMember(p.r, pname, p.text)
+        if ok then
+            wrote = wrote + 1
+            entries[i] = { key = p.r.key, side = p.r.side, computer = p.r.computer,
+                           p = pname, off = p.off, len = p.len,
+                           sum = net.checksum(p.text) }
+        else
+            failed[#failed + 1] = tostring(msg)
+        end
+    end
+    if wrote == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
+    if #failed > 0 then
+        -- A file whose parts are only half there is worse than no file: undo what
+        -- did land rather than describe it in an index nobody can trust.
+        removeParts(a, entries)
+        return false, "incomplete write, rolled back (" .. table.concat(failed, "; ") .. ")"
     end
 
-    local wrote, failed = 0, {}
-    for i = 1, #targets do
-        local ok, msg = writeMember(targets[i], n, text)
-        if ok then wrote = wrote + 1 else table.insert(failed, msg) end
-    end
+    idx.files[n] = { size = #text, sum = net.checksum(text), parts = entries,
+                     layout = layout }
+    local okI, msgI = syncIndex(a, idx)
     pool.scan()
-    if wrote == 0 then return false, "wrote nothing (" .. table.concat(failed, "; ") .. ")" end
-    local msg = "wrote " .. n .. " (" .. #text .. " bytes) to " .. wrote .. " member(s)"
-    if #failed > 0 then msg = msg .. ", failed: " .. table.concat(failed, "; ") end
-    if a.mode ~= "mirror" then msg = msg .. "  [plain mode: only one copy exists]" end
+    local msg = "wrote " .. n .. " (" .. #text .. " bytes, " .. #entries .. " part(s)"
+    if #entries == 1 then msg = msg .. " on " .. entries[1].key end
+    msg = msg .. ")"
+    if okI then
+        if a.mode == "plain" then msg = msg .. "  [plain mode: only one copy exists]" end
+    else
+        msg = msg .. "  WARNING: " .. msgI
+    end
     return true, msg
 end
 
 function remove(name, arrayID)
     if not safeName(name) then return false, "bad file name" end
-    local members = membersOf(arrayID)
+    local members, a = membersOf(arrayID)
+    local idx = readIndex(a)
+    if idx and idx.files[name] then
+        local ent = idx.files[name]
+        local gone, failed = 0, {}
+        for i = 1, #(ent.parts or {}) do
+            local r = memberByKey(a, ent.parts[i].key)
+            if r == nil then
+                failed[#failed + 1] = tostring(ent.parts[i].key) .. " is gone"
+            else
+                local ok, msg = deleteOn(r, ent.parts[i].p)
+                if ok then gone = gone + 1 else failed[#failed + 1] = tostring(msg) end
+            end
+        end
+        idx.files[name] = nil
+        syncIndex(a, idx)
+        pool.scan()
+        if gone == 0 then return false, "removed nothing (" .. table.concat(failed, "; ") .. ")" end
+        return true, "removed " .. name .. " (" .. gone .. " part(s))"
+    end
     local gone, failed = 0, {}
     for i = 1, #members do
-        local r = members[i]
-        if r.remote == true then
-            if transport == nil then table.insert(failed, r.key .. ": no route") else
-                local ok, rep = transport(r.computer, net.fdelMsg(os.getComputerID(), r.computer, pathFor(r, name)))
-                if ok and rep and rep.ok == true then gone = gone + 1
-                else table.insert(failed, r.key .. ": " .. tostring(rep and rep.msg)) end
-            end
-        else
-            local okD, derr = pcall(fs.delete, localPath(r, name))
-            if okD then gone = gone + 1 else table.insert(failed, r.key .. ": " .. tostring(derr)) end
-        end
+        local ok, msg = deleteOn(members[i], name)
+        if ok then gone = gone + 1 else failed[#failed + 1] = tostring(msg) end
     end
     pool.scan()
     if gone == 0 then return false, "removed nothing (" .. table.concat(failed, "; ") .. ")" end

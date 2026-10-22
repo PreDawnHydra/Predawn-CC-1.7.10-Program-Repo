@@ -139,18 +139,24 @@ shell, or `fs.list()` from `lua`, will.
 
 ## Files: put, get, ls
 
-The Builder has a fourth sub-screen, **Files**. It lists what the array holds and
+Open a pool on the **Arrays** screen and its FILES panel lists what it holds and
 which members hold it:
 
 ```
-ARRAY  SYMPHONY  (DA8.1792, mirror)
-  symphony.txt  [8/8]
-  note17         [1/8]   not on every member
++ FILES  (mirror) --------------------------------+
+|  both.txt     [8/8]                             |
+|  second.txt   [1/8]   not on every member       |
++-------------------------------------------------+
+   Back    Get file    Delete    Repair
+
 ```
 
-* Click a file to select it. `Get selected` copies it onto **this computer** at
-  `/dcget/<name>`; `Next array` cycles through every array on the network.
-* `Delete selected` is **two clicks** — the first arms (the row gets a `!` and the
+* Click a file to select it; `Get file` copies it onto **this computer** at
+  `/hdd/dcget/<name>`. `hdd` is not a guess: 1.75 resolves a path by its first
+  segment against a mounted drive name, and `Computer` builds its filesystem
+  with `new FileSystem("hdd", rootMount)`, so a relative `dcget/x` resolves to
+  nothing at all.
+* `Delete` is **two clicks** — the first arms (the row gets a `!` and the
   note says so), the second removes it from every member. Deleting user data is
   not a single click, unlike ejecting a floppy.
 * Type a short note in the field and press enter to put a small file in. Anything

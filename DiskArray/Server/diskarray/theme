@@ -44,7 +44,9 @@ local PALETTES = {
         onButtonPrim = colors.white,
         buttonDang   = colors.red,       -- face for style="danger"
         onButtonDang = colors.white,
-        buttonPress  = colors.lightBlue, -- face while the mouse button is held
+        buttonPress  = colors.white,     -- face while the mouse button is held
+                                          -- (brighter than every other face, so
+                                          -- a click is obvious on any background)
         onButtonPress= colors.black,
         gutter      = colors.gray,       -- divider between menu and content
         scrollbar   = colors.gray,       -- scrollbar track
@@ -65,7 +67,7 @@ local PALETTES = {
         buttonHi  = colors.lightGray, onButtonHi = colors.black,
         buttonPrim= colors.gray,  onButtonPrim= colors.black,
         buttonDang= colors.white, onButtonDang= colors.black,
-        buttonPress= colors.lightGray, onButtonPress= colors.black,
+        buttonPress= colors.white, onButtonPress= colors.black,
         gutter    = colors.gray,  scrollbar   = colors.gray,
         scrollbarHi = colors.lightGray,
     },

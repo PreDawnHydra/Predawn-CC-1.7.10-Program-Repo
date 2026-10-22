@@ -1,6 +1,6 @@
 # DiskArray
 
-**Status: slice 4 runs.** The server finds the Disk Drives — its own and other
+**Status: slice 5 runs.** The server finds the Disk Drives — its own and other
 computers' over a **wired modem** — shows a clickable pool (totals plus a capacity
 bar per drive) on the computer screen or a monitor, and knows the **array**: each
 member floppy carries a `.diskarray` manifest, the Builder creates/repairs arrays
@@ -302,7 +302,12 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
    `put` / `get` / `ls` across an array in `diskarray/files`, `mirror` mode, and
    the Builder's **Files** sub-screen (Get to `/dcget`, two-click Delete,
    Next array).
-5. `span` / `stripe` modes: a chunk map on the manifest plus free-space-aware
+5. **Done (slice 5):** an **Arrays** screen — one row per pool with a mode-aware
+   capacity bar, click to open a pool (members, holes, capacity meter, and the
+   file browser moved out of the Builder), plus button fixes: labels size their
+   own buttons so nothing reads `Get s`, and the press face is drawn before the
+   action rebuilds the screen so a click actually looks like a click.
+6. `span` / `stripe` modes: a chunk map on the manifest plus free-space-aware
    placement, and a `Client/` program with the terminal UI.
 5. `Client/` program with the terminal UI.
 6. `stripe` and `span` modes.

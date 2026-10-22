@@ -327,6 +327,21 @@ function create(opts)
             -- Visible acknowledgement that the click landed; the button's own
             -- action may overwrite this with a more specific message.
             a.notify("-> " .. (hit.label or "action"), "dim")
+            -- Paint the held face BEFORE the action runs. Most actions rebuild
+            -- the screen, and a rebuilt tree no longer contains this widget, so
+            -- without this frame the press was never on screen at all and the
+            -- click looked like nothing happened.
+            a.draw()
+            local okB, errB = pcall(hit.onClick, button, x, y)
+            if not okB then a.notify("click failed: " .. tostring(errB), "error") end
+            -- Keep the face lit on whatever button now occupies this spot, so
+            -- the release (mouse_up, or the next tick) is still a visible
+            -- change rather than a state flip nobody could see.
+            if a.pressed == hit and a.root then
+                local now = a.root:hitTest(x, y)
+                if now ~= nil and now.kind == "button" then a.setPressed(now) end
+            end
+            return
         else
             -- Focus follows the click for the other focusable widgets (fields).
             local isFocusable = false

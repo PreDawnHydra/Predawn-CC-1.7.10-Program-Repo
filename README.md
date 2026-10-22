@@ -41,7 +41,8 @@ computers, with a terminal UI. See `MineSwarm/README.md`.
 ### DiskArray
 
 Several Disk Drives presented as one volume, with a clickable UI: Overview,
-Drives, and an **Array Builder** that creates arrays, joins disks into them and
+Drives, an **Arrays** screen (one pool per row with a capacity bar; open a pool to
+see its members and browse its files), and an **Array Builder** that creates arrays, joins disks into them and
 repairs them (capacity bars, single-click Eject, labels, degraded/duplicate
 reporting). Slice 3 runs: drives behind a **wired modem** join the same pool —
 run `diskarray_host.lua` on another computer and its drives appear as

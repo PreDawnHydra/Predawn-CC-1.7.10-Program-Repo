@@ -305,7 +305,7 @@ local function grouped()
                 if not g then
                     g = { id = r.array, name = r.name, mode = r.mode, present = 0,
                           slots = {}, seen = {}, list = {}, members = 0, dupes = 0,
-                          free = 0 }
+                          free = 0, used = 0, minFree = nil, minCap = nil }
                     groups[r.array] = g
                     table.insert(order, r.array)
                 end
@@ -314,7 +314,13 @@ local function grouped()
                 g.seen[r.member] = true
                 g.slots[r.slot] = (g.slots[r.slot] or 0) + 1
                 table.insert(g.list, r)
-                if type(r.free) == "number" then g.free = g.free + r.free end
+                if type(r.free) == "number" then
+                    g.free = g.free + r.free
+                    local u = (type(r.used) == "number") and r.used or 0
+                    g.used = g.used + u
+                    if g.minFree == nil or r.free < g.minFree then g.minFree = r.free end
+                    if g.minCap == nil or r.free + u < g.minCap then g.minCap = r.free + u end
+                end
                 local n = tonumber(r.manifest.membersCount) or 0
                 if n == 0 and type(r.manifest.members) == "table" then
                     n = #r.manifest.members
@@ -370,16 +376,19 @@ function arraySummary(onlyID)
                 expected = best and best.members or 0,
                 dupes = best and best.dupes or 0,
                 free = best and best.free or 0,
+                used = best and best.used or 0,
                 missing = {},
                 members = {},
                 arrays = #order,
                 unmanifested = unmanifested,
                 unreadable = unreadable }
     if best then
+        s.capacity, s.poolFree, s.poolUsed = capacityOf(best)
         s.missing = holes(best)
         for i = 1, #best.list do table.insert(s.members, best.list[i]) end
         s.state = stateOf(best)
     else
+        s.capacity, s.poolFree, s.poolUsed = 0, 0, 0
         s.state = "none"
     end
     return s
@@ -387,6 +396,23 @@ end
 
 -- Every array visible from here, biggest first. This is what lets one server
 -- look after several arrays across several computers.
+---------------------------------------------------------------------------
+-- What a pool can actually hold, which is NOT simply the sum of its disks.
+-- A mirror writes every file to every member, so the pool is only as big as
+-- its SMALLEST disk; plain (and span, when it exists) can use the whole sum.
+-- Showing the sum for a mirror would promise space that cannot be used.
+---------------------------------------------------------------------------
+function capacityOf(g)
+    if g.mode == "mirror" then
+        local cap = g.minCap or 0
+        local free = g.minFree or 0
+        return cap, free, cap - free
+    end
+    local free = g.free or 0
+    local used = g.used or 0
+    return free + used, free, used
+end
+
 function arrays()
     local groups, order = grouped()
     local out = {}
@@ -395,7 +421,9 @@ function arrays()
         table.insert(out, { id = g.id, name = g.name, mode = g.mode,
                             present = g.present, expected = g.members,
                             missing = holes(g), dupes = g.dupes, free = g.free,
-                            state = stateOf(g), members = g.list })
+                            used = g.used, state = stateOf(g), members = g.list })
+        local cap, free, used = capacityOf(g)
+        out[#out].capacity, out[#out].poolFree, out[#out].poolUsed = cap, free, used
     end
     table.sort(out, function(a, b)
         if a.expected ~= b.expected then return a.expected > b.expected end

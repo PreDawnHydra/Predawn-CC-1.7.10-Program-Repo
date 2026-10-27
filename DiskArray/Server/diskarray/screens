@@ -179,10 +179,23 @@ local function buildOverview(app, root)
               if #hs == 0 then return "none (this computer only)" end
               local out = {}
               for i = 1, #hs do
-                  table.insert(out, "#" .. hs[i].computer .. " " .. hs[i].got .. "d " .. hs[i].age .. "s")
+                  -- an unverified host is a stranger that claimed drives; its
+                  -- count must not look like a contribution to the pool
+                  table.insert(out, "#" .. hs[i].computer .. " " .. hs[i].got .. "d "
+                                   .. hs[i].age .. "s"
+                                   .. (hs[i].verified == false and " UNVERIFIED" or ""))
               end
               return table.concat(out, "  ")
           end, "dim" },
+        -- Whether the pool is open to the wire at all. Said even when it is
+        -- fine, because "open" is the state that bites you later.
+        { "network", function()
+              if net == nil or not net.locked() then
+                  return "OPEN - any computer on this wire can claim these drives"
+              end
+              return "locked - hosts must know the passphrase"
+          end,
+          function() return (net ~= nil and net.locked()) and "ok" or "warn" end },
     }
 
     -- Whether these rows exist at all is decided when the screen is built (a

@@ -27,6 +27,7 @@ local USAGE = {
     "usage: diskarray_server.lua [--monitor <side>] [--refresh <secs>] [--rescan <secs>]",
     "                            [--discover <secs>] [--host-timeout <secs>]",
     "                            [--file-timeout <secs>] [--no-net]",
+    "                            [--key <phrase> | --key-file <path>]",
     "",
     "  --monitor <side>    put the UI on a monitor (clickable via monitor_touch)",
     "  --refresh <secs>    redraw interval, default 1",
@@ -34,6 +35,9 @@ local USAGE = {
     "  --discover <secs>   ask the network for host drives, default 5",
     "  --host-timeout <s>  drop a host silent this long, default 20",
     "  --no-net            ignore modems: only this computer's drives",
+    "  --key <phrase>      shared passphrase; hosts must use the same one, and",
+    "                      prove they know it before their drives are believed",
+    "  --key-file <path>   read the passphrase from a file instead of typing it",
     "",
     "Run diskarray_host.lua on any other computer whose drives you want here.",
     "Click a screen in the sidebar. On the keyboard: up/down move the sidebar,",
@@ -85,6 +89,9 @@ while i <= #argv do
         hostTimeout = tonumber(argv[i + 1]) or hostTimeout; i = i + 2
     elseif a == "--no-net" then
         noNet = true; i = i + 1
+    elseif a == "--key" or a == "--key-file" then
+        -- parsed once, by net.keyFromArgs, so both ends read it identically
+        i = i + 2
     else
         print("unknown argument: " .. tostring(a)); usage(); return
     end
@@ -94,6 +101,17 @@ if rescanEvery < 1 then rescanEvery = 1 end
 if discoverEvery < 1 then discoverEvery = 1 end
 if type(fileTimeoutOpt) == "number" and fileTimeoutOpt > 0 then fileTimeout = fileTimeoutOpt end
 if hostTimeout < 5 then hostTimeout = 5 end
+
+-- The passphrase is read the same way on both ends. A --key-file that cannot be
+-- read stops the program here: starting unlocked while looking locked is the one
+-- failure this must never have.
+local pass, keyWhy, keyFile = net.keyFromArgs(argv)
+if keyWhy then
+    print("ERROR: " .. keyWhy)
+    print("refusing to start unlocked when a key file was named.")
+    return
+end
+if pass then net.setKey(pass) end
 
 ---------------------------------------------------------------------------
 -- Modules. NO ".lua" in these paths: os.loadAPI names the global from
@@ -148,7 +166,20 @@ end
 local MY_ID = os.getComputerID()
 local PROTO = net.protocol()
 local modems = {}
-local srv = net.listen({ timeout = hostTimeout })
+local trust = net.trust({
+    computer = MY_ID,
+    -- a host that answered gets its drives asked for immediately, instead of
+    -- waiting for the next --discover tick
+    onOK = function(id)
+        if #modems > 0 then
+            pcall(rednet.send, id, net.queryMsg(MY_ID, id), PROTO)
+        end
+    end,
+    onBad = function(id, why)
+        print("REJECTING host #" .. tostring(id) .. ": " .. why)
+    end,
+})
+local srv = net.listen({ timeout = hostTimeout, trust = trust })
 
 if not noNet then
     local names = peripheral.getNames()
@@ -234,11 +265,22 @@ files.setTransport(askHost)
 -- First scan, before any UI exists, so the screens always have data
 ---------------------------------------------------------------------------
 pool.scan()
+if net.locked() then
+    print("LOCKED: hosts must know the passphrase"
+          .. (keyFile and (" (from " .. keyFile .. ")") or "")
+          .. " before their drives are believed")
+    if net.keyFileIsRemovable(keyFile) then
+        print("  note: the key file is on a floppy - anyone who takes the disk has the phrase")
+    end
+else
+    print("UNLOCKED: any computer on this wire can claim drives. Pass --key to close that.")
+end
 pingHosts()
 
 local a = app.create({
     title   = "DISKARRAY  id " .. tostring(os.getComputerID()) ..
-              (onMonitor and ("  mon:" .. tostring(monitorSide)) or ""),
+              (onMonitor and ("  mon:" .. tostring(monitorSide)) or "") ..
+              (net.locked() and "  [locked]" or "  [open]"),
     refresh = refresh,
     -- No bottom status row: the body runs to the last row of the screen. Notes
     -- (including failures) go to the top-right of the title bar instead, so a
@@ -251,7 +293,12 @@ local a = app.create({
             -- 1.75 order (rom/apis/rednet): <replyChannel> <message> <protocol>
             local sender, message, protocol = p1, p2, p3
             if protocol == PROTO and type(message) == "table" then
-                srv.onMessage(message)
+                -- onMessage now returns messages to send back: a challenge for a
+                -- stranger, an answer to theirs, or nothing at all
+                local reps = srv.onMessage(message, sender) or {}
+                for k = 1, #reps do
+                    if reps[k].to then pcall(rednet.send, reps[k].to, reps[k], PROTO) end
+                end
                 absorbRemote()
                 a.rebuild()
                 local ev = srv.takeEvents()

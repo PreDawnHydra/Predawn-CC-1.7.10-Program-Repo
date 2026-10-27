@@ -40,7 +40,7 @@
 -- quietly losing the drives at the end.
 
 local PROTO   = "diskarray"
-local VERSION = 1
+local VERSION = 2          -- v2 = keyed peers (see the trust section)
 local BATCH   = 12          -- drives per hosts message
 
 ---------------------------------------------------------------------------
@@ -106,6 +106,65 @@ function unchunk(parts)
 end
 
 ---------------------------------------------------------------------------
+-- Trust
+--
+-- Any computer on the wire that speaks "diskarray" could claim to be a host,
+-- and any computer could tell a real host to eject a disk. --allow is a fence
+-- of computer IDs, and IDs are visible to everyone; they decide who is ALLOWED
+-- to be asked, not who can PROVE who they are. A shared passphrase is the only
+-- secret ComputerCraft 1.75 offers - and 1.75 has no crypto library at all: no
+-- md5, no sha, no hmac. So this is a keyed 32-bit digest plus a challenge that
+-- changes every contact.
+--
+-- What that buys: a stranger on the wire cannot join your pool, cannot inject
+-- fake drives, and cannot order your hosts around, because it does not know the
+-- phrase and cannot answer a challenge it has never seen.
+-- What it does NOT buy: it is not a signature. Someone who taps your wire,
+-- captures a challenge and its answer, and has hours of ComputerCraft time could
+-- search for a phrase that matches. If that player is a real threat, move the
+-- computers onto separate rednets instead of relying on this.
+---------------------------------------------------------------------------
+local function mul32(a, b)
+    -- (a*b) mod 2^32 without ever exceeding 2^53, where a Lua double stops
+    -- being exact: 4.29e9 * 1.67e7 = 7.2e16 is NOT an integer in Lua, and the
+    -- low bits come off as garbage. Splitting the multiplicand keeps every
+    -- intermediate below 1.1e12.
+    local ahi, alo = math.floor(a / 65536), a % 65536
+    return (alo * b + math.fmod(ahi * b, 65536) * 65536) % 4294967296
+end
+
+function keyDigest(pass, text)
+    if type(pass) ~= "string" or pass == "" then return nil end
+    local h = 2166136261
+    local function mix(str)
+        for i = 1, #str do
+            h = (h + string.byte(str, i)) % 4294967296
+            h = mul32(h, 16777619)
+        end
+    end
+    -- secret around the text, so the answer does not depend on the text alone
+    mix(pass); mix(tostring(text or "")); mix(pass)
+    return h
+end
+
+local secret, tag = nil, nil
+
+-- Returns the tag that goes on the wire, or nil when no key is set. The
+-- passphrase itself is never sent.
+function setKey(pass)
+    if type(pass) ~= "string" or pass == "" then
+        secret, tag = nil, nil
+        return nil
+    end
+    secret, tag = pass, keyDigest(pass, PROTO .. "/" .. VERSION)
+    return tag
+end
+function key()     return tag end
+function locked()  return tag ~= nil end
+function answer(n) return tag == nil and nil or keyDigest(secret, n) end
+
+
+---------------------------------------------------------------------------
 -- Message constructors (used by both ends)
 ---------------------------------------------------------------------------
 local seq = 0
@@ -113,7 +172,114 @@ local function nextID() seq = seq + 1 return seq end
 function requestID() return seq end
 
 local function base(t, from)
-    return { p = PROTO, t = t, from = from, v = VERSION, id = nextID() }
+    -- k is the key tag: it says "this sender knows the passphrase", and it is
+    -- checked before a single drive name is handed over.
+    return { p = PROTO, t = t, from = from, v = VERSION, id = nextID(), k = tag }
+end
+
+-- A locked host announces itself with hello: no side names, no labels, no free
+-- space. Layout is the thing worth keeping off a shared wire.
+function helloMsg(from) return base("hello", from) end
+
+function chalMsg(from, to, nonce)
+    local m = base("chal", from); m.to = to; m.n = nonce; return m
+end
+
+function chalrMsg(from, to, nonce, ans)
+    local m = base("chalr", from); m.to = to; m.n = nonce; m.a = ans; return m
+end
+
+---------------------------------------------------------------------------
+-- A peer is trusted once it has answered a challenge we issued. Both ends use
+-- this: the server proves itself to the host, and the host to the server.
+---------------------------------------------------------------------------
+function trust(opts)
+    local t = {
+        computer = opts.computer,
+        verified = {},      -- peer id -> true
+        failed   = {},      -- peer id -> why
+        sent     = {},      -- nonce -> the peer we challenged
+        nSent    = 0,
+    }
+    local MAX_PENDING = 32
+
+    local function prune()
+        -- bounded: a hostile peer could spray challenges to grow this table
+        if t.nSent <= MAX_PENDING then return end
+        for n in pairs(t.sent) do
+            t.sent[n] = nil
+            t.nSent = t.nSent - 1
+            if t.nSent <= MAX_PENDING then break end
+        end
+    end
+
+    function t.locked() return tag ~= nil end
+    function t.ok(id)   return tag == nil or t.verified[id] == true end
+
+    function t.challenge(to)
+        if tag == nil then return nil end
+        local n = tostring(t.computer) .. ":" .. tostring(nextID())
+        t.sent[n] = to
+        t.nSent = t.nSent + 1
+        prune()
+        return chalMsg(t.computer, to, n)
+    end
+
+    -- Returns the messages to send back, or nil if this is not a trust message.
+    function t.onMessage(m, from)
+        if m.t == "chal" then
+            if tag == nil then return {} end
+            if m.k ~= tag then
+                t.failed[from] = "wrong or missing key"
+                return {}
+            end
+            t.failed[from] = nil
+            local reps = { chalrMsg(t.computer, from, m.n, answer(m.n)) }
+            if not t.verified[from] then
+                local c = t.challenge(from)
+                if c then table.insert(reps, c) end
+            end
+            return reps
+        elseif m.t == "chalr" then
+            if tag == nil then return {} end
+            if m.k ~= tag then
+                t.failed[from] = "wrong or missing key"
+                return {}
+            end
+            -- the nonce must be ours AND aimed at this sender: an answer copied
+            -- off the wire, or replayed after we stopped waiting for it, fails here
+            if t.sent[m.n] ~= from then
+                -- Someone answered a challenge we never sent them, or replayed an
+                -- answer we had stopped waiting for. That proves nothing, so any
+                -- trust they already had is dropped as well: replaying an old
+                -- answer must not keep a session alive.
+                t.verified[from] = nil
+                t.failed[from] = "answered a challenge that was never sent to them"
+                return {}
+            end
+            t.sent[m.n], t.nSent = nil, t.nSent - 1
+            if m.a == answer(m.n) then
+                t.verified[from], t.failed[from] = true, nil
+                if opts.onOK then opts.onOK(from) end
+            else
+                t.verified[from] = nil
+                t.failed[from] = "wrong passphrase"
+                if opts.onBad then opts.onBad(from, t.failed[from]) end
+            end
+            return {}
+        end
+        return nil
+    end
+
+    function t.drop(id) t.verified[id], t.failed[id] = nil, nil end
+
+    function t.summary()
+        local okList, badList = {}, {}
+        for id in pairs(t.verified) do table.insert(okList, id) end
+        for id, why in pairs(t.failed) do table.insert(badList, "#" .. tostring(id) .. " " .. why) end
+        return okList, badList
+    end
+    return t
 end
 
 function pingMsg(from)  return base("ping", from) end
@@ -269,6 +435,60 @@ end
 -- serve() owns no drive data of its own: it asks a provider for current
 -- records, and answers the protocol. diskarray_host.lua passes a provider that
 -- reads the real drives; the tests pass one that returns a fixed list.
+---------------------------------------------------------------------------
+-- Reading the passphrase. It can be typed (--key) or kept in a file
+-- (--key-file) so it does not sit in the shell history of a public machine.
+-- A named key file that cannot be read is an ERROR, not a silent downgrade to
+-- unlocked: the one failure mode this must never have is starting up open and
+-- looking closed.
+---------------------------------------------------------------------------
+function keyFromArgs(argv)
+    local phrase, file
+    local i = 1
+    while i <= #argv do
+        local a = argv[i]
+        if a == "--key" then
+            phrase = tostring(argv[i + 1] or ""); i = i + 2
+        elseif a == "--key-file" then
+            file = tostring(argv[i + 1] or ""); i = i + 2
+        else
+            i = i + 1
+        end
+    end
+    if type(file) == "string" and file ~= "" then
+        -- pcall hands the handle back as its SECOND result; losing it here makes
+        -- a perfectly good key file look missing (it did, in the test suite).
+        local ok, handle = pcall(function() return fs.open(file, "r") end)
+        if not ok then
+            return nil, "cannot read --key-file " .. file .. ": " .. tostring(handle)
+        end
+        if not handle then
+            return nil, "cannot read --key-file " .. file .. ": no such file"
+        end
+        local h = handle
+        -- readLine, not readAll: 1.75 readAll drops the newlines
+        local line = h.readLine()
+        h.close()
+        if type(line) == "string" then
+            line = line:gsub("^%s+", ""):gsub("%s+$", "")
+        end
+        if line == nil or line == "" then
+            return nil, "--key-file " .. file .. " holds no passphrase"
+        end
+        phrase = line
+    end
+    if phrase == "" then phrase = nil end
+    return phrase, nil, file
+end
+
+-- A passphrase sitting on a floppy can be walked off with. Say so once.
+function keyFileIsRemovable(file)
+    if type(file) ~= "string" then return false end
+    local head = string.match(file, "^([^/]+)/") or ""
+    return head ~= "" and string.match(head, "^disk%d*$") ~= nil
+end
+
+
 function serve(opts)
     local h = {
         computer = opts.computer,
@@ -301,10 +521,43 @@ function serve(opts)
         return rec.mount .. "/" .. rest, nil
     end
 
+    -- What this host says when it is not answering anyone in particular. A
+    -- locked host announces itself and nothing else: no side names, no labels,
+    -- no free space. The layout is the part worth keeping off a shared wire.
+    function h.push()
+        if opts.trust and opts.trust.locked() then
+            return { helloMsg(h.computer) }
+        end
+        return hostsMsgs(h.computer, h.computer, list())
+    end
+
+    -- Full drive list, aimed at one computer that has now proved the key.
+    function h.announceTo(id)
+        local msgs = hostsMsgs(h.computer, h.computer, list())
+        for i = 1, #msgs do msgs[i].to = id end
+        return msgs
+    end
+
     -- Handle one inbound message. Returns the messages to send back (possibly
     -- none); the caller does the rednet sending.
     function h.onMessage(m)
         if type(m) ~= "table" or m.p ~= PROTO then return {} end
+        local tr = opts.trust
+        if tr and tr.locked() then
+            local reps = tr.onMessage(m, m.from)
+            if reps then return reps end
+            if m.k ~= key() then
+                return { ackMsg(h.computer, m.from, false,
+                    "this host is locked - run diskarray_server.lua with the same --key") }
+            end
+            if not tr.ok(m.from) then
+                -- they know the phrase but have not answered a challenge yet
+                local out = { ackMsg(h.computer, m.from, false, "answer this challenge first") }
+                local c = tr.challenge(m.from)
+                if c then table.insert(out, c) end
+                return out
+            end
+        end
         if m.v ~= VERSION then
             return { ackMsg(h.computer, m.from, false,
                             "protocol version " .. tostring(m.v) .. " not understood") }
@@ -383,14 +636,10 @@ function serve(opts)
         return {}
     end
 
-    -- Something changed locally (a disk went in or out): push the new list.
-    function h.push()
-        return hostsMsgs(h.computer, h.computer, list())
-    end
-
-    function h.heartbeat()
-        return hostsMsgs(h.computer, h.computer, list())
-    end
+    -- Same thing under a different name: a disk went in or out, or the beacon
+    -- fired. One definition only, so a locked host cannot accidentally be
+    -- chatty on one path and quiet on the other.
+    function h.heartbeat() return h.push() end
 
     return h
 end
@@ -420,31 +669,69 @@ function listen(opts)
         end
     end
 
-    function s.onMessage(m)
-        if type(m) ~= "table" or m.p ~= PROTO then return end
+    function s.onMessage(m, sender)
+        if type(m) ~= "table" or m.p ~= PROTO then return {} end
+        local tr = opts.trust
+        local from = sender or m.from
+        if tr and tr.locked() then
+            local reps = tr.onMessage(m, from)
+            if reps then return reps end
+            if m.k ~= key() then
+                note("ignored #" .. tostring(from) .. " - wrong or missing key")
+                return {}
+            end
+        end
+        if m.v ~= VERSION then
+            note("host #" .. tostring(from) .. " speaks protocol v" .. tostring(m.v)
+                 .. " - update DiskArray on that computer")
+            return {}
+        end
+        if m.t == "hello" then
+            -- a locked host telling us it exists. Nothing about its drives has
+            -- been said, and nothing will be believed until it answers.
+            if tr and tr.locked() and not tr.ok(from) then
+                local c = tr.challenge(from)
+                if c then
+                    note("found locked host #" .. tostring(from) .. " - challenging it")
+                    return { c }
+                end
+            end
+            return {}
+        end
         if m.t == "bye" then
             if s.roster[m.computer or m.from] then
                 note("host #" .. tostring(m.computer or m.from) .. " went away")
             end
             forget(m.computer or m.from)
-            return
+            return {}
         elseif m.t == "ack" then
             note("host #" .. tostring(m.from) .. ": " .. (m.ok and "ok" or "failed")
                  .. (m.msg ~= "" and (" - " .. m.msg) or ""))
-            return
+            return {}
         elseif m.t ~= "hosts" then
-            return
+            return {}
+        end
+
+        -- A "hosts" message is a claim about drives. Unverified peers do not get
+        -- to make it: their drives would show up in the UI and could be pointed
+        -- at by anyone reading the roster.
+        if tr and tr.locked() and not tr.ok(from) then
+            note("#" .. tostring(from) .. " claimed drives without proving the key")
+            local c = tr.challenge(from)
+            return c and { c } or {}
         end
 
         local c = m.computer or m.from
         if not c then return end
         local h = s.roster[c]
         if not h then
-            h = { computer = c, drives = {}, total = 0, got = 0, incomplete = false }
+            h = { computer = c, drives = {}, total = 0, got = 0, incomplete = false,
+                  verified = (tr == nil) or tr.ok(from) }
             s.roster[c] = h
             table.insert(s.order, c)
             note("found host #" .. tostring(c))
         end
+        h.verified = (tr == nil) or tr.ok(from)
         if m.seq == 1 then
             h.drives, h.got, h.incomplete = {}, 0, false
             h.total = m.total or 0
@@ -469,6 +756,8 @@ function listen(opts)
         end
         for i = 1, #dropped do
             note("lost host #" .. tostring(dropped[i]) .. " (no reply)")
+            -- a host that goes quiet has to prove the key again when it returns
+            if opts.trust then opts.trust.drop(dropped[i]) end
             forget(dropped[i])
         end
         return #dropped
@@ -480,6 +769,7 @@ function listen(opts)
             local h = s.roster[s.order[i]]
             if h then
                 table.insert(out, { computer = h.computer, drives = h.drives,
+                                    verified = h.verified ~= false,
                                     total = h.total, got = #h.drives,
                                     incomplete = h.incomplete,
                                     lastSeen = h.lastSeen,

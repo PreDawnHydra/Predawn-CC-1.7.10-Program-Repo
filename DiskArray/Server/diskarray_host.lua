@@ -11,10 +11,15 @@
 --  It needs no UI, so it loads only three modules and stays small enough to run
 --  on a plain computer next to a stack of drives.
 --
---  Usage:  diskarray_host.lua [--beacon <secs>] [--allow <id,id>] [--once]
---            --beacon  how often to re-announce the drive list (default 10)
---            --allow   only take orders from these computer IDs (default: any)
---            --once    print what would be reported, then exit (a check)
+--  Usage:  diskarray_host.lua [--beacon <secs>] [--allow <id,id>]
+--                              [--key <phrase> | --key-file <path>] [--once]
+--            --beacon    how often to re-announce that this host exists (10)
+--            --allow     only take orders from these computer IDs (default: any)
+--            --key       shared passphrase; the server must use the same one.
+--                        Without it ANY computer on the wire can drive these
+--                        disks, and can read whatever is on them.
+--            --key-file  read the passphrase from a file instead of typing it
+--            --once      print what would be reported, then exit (a check)
 --            --help    this text
 --
 --  Stop it with Ctrl+T. The server notices a host that stopped answering after
@@ -22,7 +27,8 @@
 -- ===========================================================================
 
 local USAGE = {
-    "usage: diskarray_host.lua [--beacon <secs>] [--allow <id,id>] [--once] [--help]",
+    "usage: diskarray_host.lua [--beacon <secs>] [--allow <id,id>] [--key <phrase>]",
+    "                 [--key-file <path>] [--once] [--help]",
     "",
     "  exports this computer's Disk Drives to a DiskArray server over rednet.",
     "  needs a wired modem on any side, and the diskarray/ folder next to it.",
@@ -38,6 +44,7 @@ if shell and shell.getRunningProgram then
 end
 
 local beacon, allow, once = 10, nil, false
+local keyArg, keyFile
 local argv = { ... }
 local i = 1
 while i <= #argv do
@@ -49,12 +56,15 @@ while i <= #argv do
         beacon = tonumber(argv[i + 1]) or beacon; i = i + 2
     elseif a == "--once" then
         once = true; i = i + 1
+    elseif a == "--key" or a == "--key-file" then
+        -- parsed once, by net.keyFromArgs, so both ends read it identically
+        i = i + 2
     elseif a == "--allow" then
-        allow = {}
+        allow, allowList = {}, {}
         local spec = tostring(argv[i + 1] or "")
         for part in string.gmatch(spec, "[^,]+") do
             local id = tonumber(part)
-            if id then allow[id] = true end
+            if id then allow[id] = true; allowList[#allowList + 1] = tostring(id) end
         end
         i = i + 2
     else
@@ -100,13 +110,23 @@ end
 
 ---------------------------------------------------------------------------
 -- Orders from the server. Any computer on the rednet can send these, so
--- --allow exists; without it, treat the network as trusted (it is your own
--- wire) and say which orders were taken.
+-- --allow says WHO MAY ASK (computer ids, visible to everyone). --key says WHO
+-- THEY ARE (a shared passphrase, proved by answering a challenge). They are
+-- different checks and both are cheap; with no --key the network is treated as
+-- trusted, which is only safe on a wire nobody else can reach.
 ---------------------------------------------------------------------------
 local function allowed(from)
     if allow == nil then return true end
     return allow[from] == true
 end
+
+local pass, kwhy, kfile = net.keyFromArgs(argv)
+if kwhy then
+    print("ERROR: " .. kwhy)
+    print("refusing to start unlocked when a key file was named.")
+    return
+end
+if pass then net.setKey(pass) end
 
 local function act(side, action, label, data)
     if type(side) ~= "string" or side == "" then return false, "no side in the message" end
@@ -129,15 +149,6 @@ local function act(side, action, label, data)
     return false, "unknown action: " .. tostring(action)
 end
 
-local host = net.serve({
-    computer = MY_ID,
-    provider = function()
-        pool.scan()
-        return pool.drives()
-    end,
-    act = act,
-})
-
 local function send(msg)
     if type(msg) ~= "table" or msg.to == nil then return end
     pcall(rednet.send, msg.to, msg, PROTO)
@@ -146,6 +157,34 @@ end
 local function broadcast(msgs)
     for j = 1, #msgs do pcall(rednet.broadcast, msgs[j], PROTO) end
 end
+
+local host          -- declared here so the trust callbacks can use it
+local trust = net.trust({
+    computer = MY_ID,
+    -- a server that answered our challenge gets the full drive list right away
+    onOK = function(id)
+        print("server #" .. tostring(id) .. " proved the key")
+        if host then
+            local msgs = host.announceTo(id)
+            for j = 1, #msgs do send(msgs[j]) end
+        end
+    end,
+    onBad = function(id, why)
+        print("REJECTING #" .. tostring(id) .. ": " .. why)
+    end,
+})
+
+host = net.serve({
+    computer = MY_ID,
+    provider = function()
+        pool.scan()
+        return pool.drives()
+    end,
+    act = act,
+    trust = trust,
+})
+
+-- (send/broadcast are defined above the trust object)
 
 ---------------------------------------------------------------------------
 -- Start
@@ -168,6 +207,17 @@ end
 
 print("DiskArray host #" .. MY_ID .. ": " .. #modems .. " modem(s), "
       .. pool.count() .. " drive(s), beacon " .. beacon .. "s")
+if net.locked() then
+    print("LOCKED: only a server that knows the passphrase sees these drives"
+          .. (kfile and (" (key from " .. kfile .. ")") or ""))
+    if net.keyFileIsRemovable(kfile) then
+        print("  note: the key file is on a floppy - anyone who takes the disk has the phrase")
+    end
+else
+    print("UNLOCKED: any computer on this wire can list, read and drive these disks.")
+    print("  pass --key <phrase> here and to diskarray_server.lua to close that.")
+    if allow then print("  orders are limited to computer ids: " .. table.concat(allowList, ", ")) end
+end
 broadcast(host.push())
 os.startTimer(beacon)
 

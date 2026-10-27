@@ -324,7 +324,17 @@ ships a `swarm/` folder per role, so a clone of one role folder is self-containe
    (`files/.dapool`), free-space-aware placement, split files (`name!1`…),
    checksummed parts, rollback of half-written files, and honest degraded-read
    messages. Capacity per mode was already honest.
-7. `Client/` program with the terminal UI.
+7. **Done (slice 7):** trust. `--allow` was a fence of computer ids; now there is
+   a shared secret. Protocol v2 challenges each peer with a fresh nonce before any
+   drive name changes hands, a locked host broadcasts no layout, a replayed answer
+   drops trust, and a `--key-file` that cannot be read stops the program rather
+   than leaving it open looking locked. It is a keyed 32-bit digest — 1.75 has no
+   crypto library — so it keeps strangers out without pretending to be a
+   signature.
+8. `Client/` program with the terminal UI.
+9. Repair for split files in a degraded pool: a mirror can be rebuilt from an
+   intact copy, but a span/stripe file that lost a piece is gone — honest repair
+   says so and takes it out of the index instead of printing junk.
 
 ## Tests
 

@@ -59,6 +59,51 @@ clicks one — there is no `monitor_click` in this version — and the app loop 
 it onto a left click. Ctrl+T stops the program. Auto-start is deliberately not
 installed by this slice.
 
+## Trust: who may ask, and who can prove who they are
+
+Two different questions, two different switches:
+
+| switch | question | what it really is |
+|---|---|---|
+| `--allow <id,id>` | who am I **allowed** to take orders from | a list of computer ids, and ids are visible to anyone |
+| `--key <phrase>` / `--key-file <path>` | who **are** they | a shared secret, proved by answering a challenge |
+
+With a key set the protocol is **v2**:
+
+- Every message carries a key tag. A peer without it is refused before a single
+  drive name changes hands, and the server says so (`ignored #12 - wrong or
+  missing key`).
+- Each side **challenges** the other with a fresh nonce on first contact; the
+  answer is `digest(passphrase, nonce)`. Only after that does a host reveal its
+  drives, and only after that does it obey an order.
+- A locked host **broadcasts no layout**: its beacon is a bare `hello` — id and
+  version, no side names, no labels, no free space. Details go by unicast to a
+  server that has proved itself.
+- Nonces are single use and tied to the peer they were sent to. An answer copied
+  off the wire, or replayed later, fails and **drops** whatever trust that peer
+  had.
+- A host that goes quiet has to prove the key again when it comes back.
+- The UI says which state it is in: the title carries `[locked]` or `[open]`, a
+  `network` row spells out what that means, and a host that claimed drives
+  without proving the key is listed `UNVERIFIED`.
+- A `--key-file` that cannot be read **stops the program**: starting unlocked
+  while looking locked is the one failure this must never have. A key file on a
+  floppy gets a warning, because a floppy can be walked off with.
+- An old peer (protocol v1) is reported, not trusted: `host #9 speaks protocol v1
+  - update DiskArray on that computer`.
+
+**What this is not.** ComputerCraft 1.75 has no crypto library — no md5, no sha,
+nothing to sign with. The digest here is a keyed 32-bit mix. It stops a stranger
+joining your pool, injecting fake drives, or driving your disks, because it
+cannot answer a challenge it has never seen. It is **not** a signature: someone
+who taps your wire, captures a challenge and its answer, and is willing to spend
+hours of ComputerCraft searching could match it. If that player is a real threat,
+put the computers on separate rednets instead of leaning harder on the passphrase.
+
+With no `--key`, behaviour is exactly what it always was: the wire is trusted and
+`--allow` is the only fence. The suite keeps that path green on purpose, so
+adding the lock could not quietly break a working unlocked setup.
+
 ## Files
 
 ```

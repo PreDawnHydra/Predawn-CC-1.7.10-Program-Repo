@@ -102,16 +102,6 @@ if discoverEvery < 1 then discoverEvery = 1 end
 if type(fileTimeoutOpt) == "number" and fileTimeoutOpt > 0 then fileTimeout = fileTimeoutOpt end
 if hostTimeout < 5 then hostTimeout = 5 end
 
--- The passphrase is read the same way on both ends. A --key-file that cannot be
--- read stops the program here: starting unlocked while looking locked is the one
--- failure this must never have.
-local pass, keyWhy, keyFile = net.keyFromArgs(argv)
-if keyWhy then
-    print("ERROR: " .. keyWhy)
-    print("refusing to start unlocked when a key file was named.")
-    return
-end
-if pass then net.setKey(pass) end
 
 ---------------------------------------------------------------------------
 -- Modules. NO ".lua" in these paths: os.loadAPI names the global from
@@ -135,6 +125,20 @@ for m = 1, #MODULES do
         return
     end
 end
+
+-- The passphrase is read the same way as on the host, and this sits AFTER the
+-- module loop on purpose: net is not a global until os.loadAPI has made it one.
+-- Reaching for it in the argument stage died in game as "attempt to index ? (a
+-- nil value)". A --key-file that cannot be read stops the program here, before
+-- a modem is opened: starting unlocked while looking locked is the one failure
+-- this must never have.
+local pass, keyWhy, keyFile = net.keyFromArgs(argv)
+if keyWhy then
+    print("ERROR: " .. keyWhy)
+    print("refusing to start unlocked when a key file was named.")
+    return
+end
+if pass then net.setKey(pass) end
 
 theme.auto()
 
